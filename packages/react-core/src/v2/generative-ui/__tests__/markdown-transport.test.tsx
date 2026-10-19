@@ -292,6 +292,7 @@ describe("markdown transport", () => {
         functions: true,
         events: false,
         templates: true,
+        checks: false,
       }),
     );
     expect(JSON.parse(listed.context[1].value)).toEqual({

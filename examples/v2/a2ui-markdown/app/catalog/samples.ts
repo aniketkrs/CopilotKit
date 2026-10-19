@@ -1028,6 +1028,82 @@ export const SAMPLES: CatalogSample[] = [
     ],
     data: { seats: 4, total: 48 },
   },
+  {
+    group: "Dynamic values",
+    title: "Checks: length, email; Button disabled until valid",
+    covers: ["TextField", "Button"],
+    components: [
+      { id: "root", component: "Card", children: ["ti", "n", "e", "b"] },
+      { id: "ti", component: "Title", text: "Invite a teammate", size: "sm" },
+      {
+        id: "n",
+        component: "TextField",
+        label: "Name",
+        value: { "@path": "/invite/name" },
+        checks: [
+          {
+            condition: {
+              "@call": "length",
+              args: { value: { "@path": "/invite/name" }, min: 2 },
+            },
+            message: "At least 2 characters",
+          },
+        ],
+      },
+      {
+        id: "e",
+        component: "TextField",
+        label: "Email",
+        variant: "email",
+        value: { "@path": "/invite/email" },
+        checks: [
+          {
+            condition: {
+              "@call": "email",
+              args: { value: { "@path": "/invite/email" } },
+            },
+            message: "Enter a valid email address",
+          },
+        ],
+      },
+      {
+        id: "b",
+        component: "Button",
+        label: "Send invite",
+        variant: "primary",
+        checks: [
+          {
+            condition: {
+              "@call": "and",
+              args: {
+                values: [
+                  {
+                    "@call": "length",
+                    args: { value: { "@path": "/invite/name" }, min: 2 },
+                  },
+                  {
+                    "@call": "email",
+                    args: { value: { "@path": "/invite/email" } },
+                  },
+                ],
+              },
+            },
+            message: "Fill in a name and a valid email",
+          },
+        ],
+        onClick: {
+          event: {
+            name: "invite",
+            userMessage: {
+              "@call": "formatString",
+              args: { value: "Invite ${/invite/name} (${/invite/email})" },
+            },
+          },
+        },
+      },
+    ],
+    data: { invite: { name: "", email: "" } },
+  },
   // ----------------------------------------------------------------- Media
   {
     group: "Media",

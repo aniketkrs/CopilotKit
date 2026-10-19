@@ -142,6 +142,8 @@ export interface GenerativeUIGuideFeatures {
   events: boolean;
   /** A component has a "multiple" slot, which takes templates and @index. */
   templates: boolean;
+  /** A component has a "checks" prop: validation rules on inputs. */
+  checks: boolean;
 }
 
 /** Every optional rule group. Use it when the manifest is not known. */
@@ -149,6 +151,7 @@ export const ALL_GENERATIVE_UI_GUIDE_FEATURES: GenerativeUIGuideFeatures = {
   functions: true,
   events: true,
   templates: true,
+  checks: true,
 };
 
 /**
@@ -184,6 +187,14 @@ export function generativeUIGuideFeatures(
         Object.values(c.slots ?? {}).includes("multiple") ||
         hasChildList(c.props),
     ),
+    checks: components.some((c) => {
+      const properties = c.props.properties;
+      return (
+        typeof properties === "object" &&
+        properties !== null &&
+        Object.prototype.hasOwnProperty.call(properties, "checks")
+      );
+    }),
   };
 }
 
@@ -236,7 +247,7 @@ const MARKDOWN_CLOSING_RULES = [
 export function buildGenerativeUIMarkdownGuidelines(
   features: GenerativeUIGuideFeatures = ALL_GENERATIVE_UI_GUIDE_FEATURES,
 ) {
-  const { functions, events, templates } = features;
+  const { functions, events, templates, checks } = features;
   const rules = [...MARKDOWN_BASE_RULES];
   if (events) {
     rules.push(
@@ -247,6 +258,11 @@ export function buildGenerativeUIMarkdownGuidelines(
       'Use {"event": ...} to send the interaction back to you as a user message. Put the text of that message in "userMessage": {"event":{"name":"choose","userMessage":"Show me the Team plan"}}.',
       'To send input values with an event, bind them in the context: "context":{"email":{"@path":"/form/email"}}.',
       "A button or other event prop without an event or functionCall does nothing.",
+    );
+  }
+  if (checks) {
+    rules.push(
+      'Validate an input with "checks": [{"condition":{"@call":"email","args":{"value":{"@path":"/form/email"}}},"message":"Enter a valid email"}]. The check functions are required, regex, length, numeric and email; a condition can also be a boolean {"@path"}. A failed check shows the message under the input and disables a Button that has the same checks.',
     );
   }
   rules.push(

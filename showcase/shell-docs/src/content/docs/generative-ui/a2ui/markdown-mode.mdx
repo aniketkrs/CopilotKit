@@ -191,7 +191,7 @@ play and then loads the privacy-enhanced embed.
 `Tabs` takes `tabs: [{ "title", "child" }]`, with the id of the panel
 component in each entry, as in the A2UI 1.0 catalog.
 
-### Dynamic values
+### Dynamic values and checks
 
 Any prop can be a literal, a data-model binding (`{ "@path": "/total" }`)
 or a function value (`{ "@call": "formatCurrency", "args": { "value":
@@ -204,6 +204,12 @@ functions of A2UI 1.0 are built in: `formatString` (with `${/path}` and
 `openUrl`, which runs only from an event binding. The agent can call them
 with `callRendererFunction` too, except `openUrl`.
 
+Every input and `Button` take `checks`, the `Checkable` rules of A2UI 1.0:
+`[{ "condition": { "@call": "email", "args": { "value": { "@path":
+"/form/email" } } }, "message": "Enter a valid email" }]`. An input shows
+the first failed message once the user has been in it, and a `Button` with
+checks is disabled while one fails.
+
 ### Your own components with child references
 
 Mark a prop that holds another component with `child()` or `childList()`
@@ -212,16 +218,6 @@ schema: `tabs: z.array(z.object({ title: z.string(), child: child() }))`.
 The engine renders the referenced components and your component receives
 them as React nodes in place of the ids. `slots` still works for the plain
 top-level case.
-
-`Map` loads `maplibre-gl` on demand; install it in your app if your agent
-draws maps. The basemap is OpenFreeMap's keyless Positron style; pass your own
-style URL as `theme: { mapStyle: "https://…/style.json" }`. A `Markdown`
-component inside a surface renders with Streamdown, like the chat prose
-around it.
-
-The example app renders every component with sample data at
-`http://localhost:3011/catalog`, next to the description and props the model
-sees.
 
 `Map` loads `maplibre-gl` on demand; install it in your app if your agent
 draws maps. The basemap is OpenFreeMap's keyless Positron style; pass your own
