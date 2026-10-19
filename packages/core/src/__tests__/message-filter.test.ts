@@ -387,18 +387,39 @@ describe("ɵkeepToolResultsWithCalls", () => {
     expect(ɵkeepToolResultsWithCalls(thread)).toBe(thread);
   });
 
-  it("moves several early results forward onto consecutive calls", () => {
-    const t0 = toolMsg("t0", "c");
-    const t1 = toolMsg("t1", "c");
-    const a1 = callsMsg("a1", "c");
-    const a2 = callsMsg("a2", "c");
+  it("moves no early result forward when its call id is reused across turns", () => {
+    // c appears on a1 and a2. Nothing says which call t0 and t1 answer, and
+    // a2 may be a pending human-in-the-loop call, so neither moves.
+    const thread = [
+      toolMsg("t0", "c"),
+      toolMsg("t1", "c"),
+      callsMsg("a1", "c"),
+      userMsg("u"),
+      callsMsg("a2", "c"),
+    ];
 
-    expect(ɵkeepToolResultsWithCalls([t0, t1, a1, a2])).toEqual([
-      a1,
-      t0,
-      a2,
-      t1,
-    ]);
+    expect(ɵkeepToolResultsWithCalls(thread)).toBe(thread);
+  });
+
+  it("moves an early result forward behind a re-id'd assistant whose call id is unique", () => {
+    const u = userMsg("u");
+    const t = toolMsg("t", "c1");
+    const x = textMsg("x");
+    const a1 = callsMsg("a1", "c1");
+
+    const out = ɵkeepToolResultsWithCalls([u, t, x, a1]);
+    expect(out).toHaveLength(4);
+    [u, x, a1, t].forEach((message, index) => expect(out[index]).toBe(message));
+  });
+
+  it("moves only the first of two early results for one unique call forward", () => {
+    const t1 = toolMsg("t1", "c");
+    const t2 = toolMsg("t2", "c");
+    const a = callsMsg("a", "c");
+
+    const out = ɵkeepToolResultsWithCalls([t1, t2, a]);
+    expect(out).toHaveLength(3);
+    [t2, a, t1].forEach((message, index) => expect(out[index]).toBe(message));
   });
 
   it("keeps an extra result for an answered call in place instead of moving it forward to a later open call", () => {
@@ -807,7 +828,7 @@ describe("ɵkeepToolResultsWithCalls", () => {
       }
     });
 
-    it("moves a result forward only when no call for its id is stored before it", () => {
+    it("moves a result forward only when its call id is on exactly one call slot, issued after it", () => {
       let movedForward = 0;
       for (const history of histories) {
         const { tagged, out, outAnchors, moved } = runTagged(history);
@@ -816,13 +837,18 @@ describe("ɵkeepToolResultsWithCalls", () => {
           const issuerSlot = slotOf(out[outAnchors[index]!]!);
           if (issuerSlot < slotOf(m)) return;
           movedForward++;
-          for (let before = 0; before < slotOf(m); before++) {
-            const earlier = tagged[before]!;
-            if (isEntry(earlier)) expect(callsFor(earlier, m)).toBe(0);
+          // Exactly one call slot for its id in the whole history, issued
+          // after the result: a reused id never moves forward.
+          let slotsForId = 0;
+          for (const entry of tagged) {
+            if (isEntry(entry)) slotsForId += callsFor(entry, m);
           }
+          expect(slotsForId).toBe(1);
+          expect(issuerSlot).toBeGreaterThan(slotOf(m));
         });
       }
-      // The generator does produce results stored before their call.
+      // Forward moves still happen: the generator produces unique-id results
+      // stored before their call.
       expect(movedForward).toBeGreaterThan(0);
     });
 

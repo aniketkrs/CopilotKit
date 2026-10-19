@@ -320,10 +320,10 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
    *   original of every message it restores and of every tool result whose
    *   call is stored, so a filter's edits to those messages are lost.
    * - **Filter repair throws**: the filter's output goes through
-   *   `ɵkeepToolResultsWithCalls` instead, which only moves results and
-   *   never throws on malformed input, so the filter's trimming and
-   *   redaction are kept and drifted results are still re-paired. If that
-   *   throws as well, the filter's output is sent as is.
+   *   `ɵkeepToolResultsWithCalls` instead, which only moves results and is
+   *   not expected to throw, even on malformed input, so the filter's
+   *   trimming and redaction are kept and drifted results are still
+   *   re-paired. If that throws as well, the filter's output is sent as is.
    *
    * **Called from the HTTP paths only, and that placement is the Intelligence
    * exemption.** An earlier revision applied the filter in

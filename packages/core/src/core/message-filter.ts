@@ -133,8 +133,10 @@ export function ɵrepairToolCallPairs(
 /**
  * Move each detached tool result to sit behind the assistant call that issued
  * it — usually back to an earlier call, and forward only when no earlier call
- * has its id — and change nothing else. Used for unfiltered sends only; a configured
- * filter goes through {@link ɵrepairToolCallPairs} instead.
+ * has its id and exactly one call in the list does — and change nothing else.
+ * Used for unfiltered sends, and on a configured filter's output only when
+ * {@link ɵrepairToolCallPairs}, which filtered sends go through otherwise,
+ * throws.
  *
  * The client store can detach a tool result from its call on its own: when a
  * backend's `MESSAGES_SNAPSHOT` carries a tool message under a different id
@@ -174,15 +176,18 @@ export function ɵrepairToolCallPairs(
  *   `call_0` every turn) are all detached, they keep their stored order
  *   across the calls, and a later turn's lone result goes to the later call
  *   rather than to an earlier one that was abandoned.
- * - Pass 3, forward, per id: the early results, left to right, each take the
- *   next slot issued after them. This repairs a result whose call was
- *   re-issued after it (a snapshot that re-ids the assistant message but
- *   keeps the result's id). If that next slot is already answered, the result
- *   stays: it never skips past an answered call onto a later one. A result
- *   left without a slot stays put. Only early results move forward: an extra result for a call that is
- *   already answered never does, so it cannot answer a later call with a
- *   reused id that is still pending (a frontend tool, an interrupt, a
- *   human-in-the-loop `call_0` waiting on the user).
+ * - Pass 3, forward, per id: an early result moves forward only when its id
+ *   is unambiguous — exactly one call slot in the whole list has it, that
+ *   slot is issued after the result, and it is still open after passes 1-2.
+ *   The first early result for the id, left to right, takes it; any other
+ *   early result for that id stays put. This repairs a result whose call
+ *   was re-issued after it (a snapshot that re-ids the assistant message but
+ *   keeps the result's id). With a reused id (providers reuse `call_0` every
+ *   turn) nothing moves forward: in `[t0, t1, a1(c), user, a2(c)]` nothing
+ *   says t1 answers a2, and a2 may be a pending call (a frontend tool, an
+ *   interrupt, a human-in-the-loop call waiting on the user). Only early
+ *   results move forward: an extra result for a call that is already
+ *   answered never does.
  * - A moved result goes behind its issuer, after the tool and transparent
  *   entries already following it; results moved behind one issuer keep their
  *   stored order. Any other message between a call and its result separates
@@ -272,19 +277,16 @@ export function ɵkeepToolResultsWithCalls(messages: Message[]): Message[] {
   }
 
   for (const [callId, results] of early) {
+    // Only an unambiguous id moves forward: exactly one call slot for it in
+    // the whole list. With a reused id (providers reuse `call_0` every turn)
+    // nothing says which later call an early result answers, and guessing
+    // can answer a pending human-in-the-loop call with another turn's
+    // result. Every slot is issued after an early result (none came before
+    // it), so the one slot only has to be still open; the first early
+    // result takes it and the rest stay put.
     const forId = slots.get(callId);
-    if (!forId) continue;
-    // Each early result may take only the next slot after it. Slots taken
-    // here advance the cursor; a slot already answered holds it, so the
-    // result stays rather than skipping onto a later, still-pending call.
-    let s = 0;
-    for (const index of results) {
-      while (s < forId.length && forId[s]!.issuer < index) s++;
-      if (s === forId.length) break;
-      if (!forId[s]!.open) continue;
-      take(forId[s]!, index);
-      s++;
-    }
+    if (forId?.length !== 1 || !forId[0]!.open) continue;
+    take(forId[0]!, results[0]!);
   }
 
   if (moved.size === 0) return messages;
