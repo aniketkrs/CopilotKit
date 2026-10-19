@@ -1,5 +1,5 @@
 import {
-  A2UI_BASIC_FUNCTIONS,
+  GENERATIVE_UI_FUNCTIONS,
   isA2UIBasicFunction,
   isA2UIValueFunction,
 } from "./basic-functions";
@@ -429,8 +429,8 @@ function functionCallProblem(
     if (isV09PathBinding(arg))
       return `${label}.args.${key}: ${V09_PATH_REASON}`;
   }
-  const basic = hasOwn(A2UI_BASIC_FUNCTIONS, name)
-    ? A2UI_BASIC_FUNCTIONS[name]
+  const basic = hasOwn(GENERATIVE_UI_FUNCTIONS, name)
+    ? GENERATIVE_UI_FUNCTIONS[name]
     : undefined;
   if (
     basic?.requiresUserActivation &&
@@ -523,8 +523,8 @@ function templateProblem(template: Record<string, unknown>, ownId: string) {
   return pathProblem(path, "template path");
 }
 
-const VALUE_FUNCTION_LIST = `@index and the basic functions (${Object.keys(
-  A2UI_BASIC_FUNCTIONS,
+const VALUE_FUNCTION_LIST = `@index and the built-in functions (${Object.keys(
+  GENERATIVE_UI_FUNCTIONS,
 )
   .filter(isA2UIValueFunction)
   .join(", ")})`;

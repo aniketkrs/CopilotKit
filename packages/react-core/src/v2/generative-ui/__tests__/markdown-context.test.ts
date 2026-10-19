@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  A2UI_BASIC_FUNCTIONS,
+  GENERATIVE_UI_FUNCTIONS,
   GENERATIVE_UI_MARKDOWN_GUIDELINES,
 } from "@copilotkit/shared";
 import { createGenerativeUIDispatcher } from "../dispatcher";
@@ -28,7 +28,7 @@ function createManifest(
 
 /** The basic functions of A2UI, as every compact schema lists them. */
 const BASIC_FUNCTIONS = Object.fromEntries(
-  Object.entries(A2UI_BASIC_FUNCTIONS).map(([name, fn]) => [
+  Object.entries(GENERATIVE_UI_FUNCTIONS).map(([name, fn]) => [
     name,
     { description: fn.description, parameters: fn.parameters },
   ]),

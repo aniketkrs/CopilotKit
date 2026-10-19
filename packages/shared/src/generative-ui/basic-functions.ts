@@ -23,6 +23,8 @@ export interface A2UIBasicFunctionInfo {
    * binding). The agent cannot call it, and a prop cannot be bound to it.
    */
   requiresUserActivation?: true;
+  /** True for a CopilotKit function that the A2UI basic catalog lacks. */
+  extension?: true;
 }
 
 /**
@@ -110,25 +112,61 @@ export const A2UI_BASIC_FUNCTIONS: Readonly<
   },
 };
 
+/**
+ * The value functions that CopilotKit adds to the basic catalog, because
+ * A2UI 1.0 has no arithmetic: `calc` evaluates an expression over named
+ * args, and `series` builds a computed list. A catalog may declare its own
+ * functions in A2UI, so these are regular catalog functions to the model;
+ * a renderer without them rejects the call instead of misrendering.
+ */
+export const COPILOTKIT_FUNCTIONS: Readonly<
+  Record<string, A2UIBasicFunctionInfo>
+> = {
+  calc: {
+    description:
+      "The value of an arithmetic expression over the other args, by name: + - * / % ( ), comparisons, && || !, cond ? a : b, min max round floor ceil abs, 'text' + name",
+    parameters:
+      "{ expression: string; [name: string]: number | string | boolean }",
+    returnType: "string",
+    extension: true,
+  },
+  series: {
+    description:
+      "A list of count copies of item; ${expression} in the item uses the loop variable (default i, counting from start, default 1) and the other args. For chart data and template lists",
+    parameters:
+      "{ count: number; item: unknown; variable?: string; start?: number; [name: string]: unknown }",
+    returnType: "string",
+    extension: true,
+  },
+};
+
+/** Every function a `{"@call"}` may name without a declaration: basic and CopilotKit. */
+export const GENERATIVE_UI_FUNCTIONS: Readonly<
+  Record<string, A2UIBasicFunctionInfo>
+> = { ...A2UI_BASIC_FUNCTIONS, ...COPILOTKIT_FUNCTIONS };
+
 /** The name of the system function that gives the index of a template item. */
 export const A2UI_INDEX_FUNCTION = "@index";
 
-/** True for a basic function name, `@index` included. */
+/** True for a built-in function name: basic, CopilotKit, or `@index`. */
 export function isA2UIBasicFunction(name: string) {
   return (
     name === A2UI_INDEX_FUNCTION ||
-    Object.prototype.hasOwnProperty.call(A2UI_BASIC_FUNCTIONS, name)
+    Object.prototype.hasOwnProperty.call(GENERATIVE_UI_FUNCTIONS, name)
   );
 }
 
 /**
- * True for a basic function that a prop or a check may call: every basic
- * function except the ones that need a user gesture.
+ * True for a built-in function that a prop or a check may call: every one
+ * except the functions that need a user gesture.
  */
 export function isA2UIValueFunction(name: string) {
   if (name === A2UI_INDEX_FUNCTION) return true;
-  const info = Object.prototype.hasOwnProperty.call(A2UI_BASIC_FUNCTIONS, name)
-    ? A2UI_BASIC_FUNCTIONS[name]
+  const info = Object.prototype.hasOwnProperty.call(
+    GENERATIVE_UI_FUNCTIONS,
+    name,
+  )
+    ? GENERATIVE_UI_FUNCTIONS[name]
     : undefined;
   return info !== undefined && !info.requiresUserActivation;
 }

@@ -372,6 +372,26 @@ describe("validateOperation: data props", () => {
     ).toBe("ok");
   });
 
+  it("accepts calc and series, the CopilotKit value functions", () => {
+    expect(
+      reasonOf(
+        card({
+          name: {
+            "@call": "calc",
+            args: { expression: "seats * 29", seats: { "@path": "/seats" } },
+          },
+        }),
+      ),
+    ).toBe("ok");
+    expect(
+      reasonOf(
+        card({
+          name: { "@call": "series", args: { count: 3, item: { n: "${i}" } } },
+        }),
+      ),
+    ).toBe("ok");
+  });
+
   it("accepts a basic function value, also nested and with bound args", () => {
     expect(
       reasonOf(
@@ -397,7 +417,7 @@ describe("validateOperation: data props", () => {
   it("rejects every other function call in a data prop", () => {
     const prefix = 'component "c1": name: ';
     const suffix =
-      "; a data prop can call only @index and the basic functions (";
+      "; a data prop can call only @index and the built-in functions (";
     const cases: Array<[unknown, string]> = [
       [
         { "@call": "formatPrice", args: {} },

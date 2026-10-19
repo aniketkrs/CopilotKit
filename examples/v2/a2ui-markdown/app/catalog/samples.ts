@@ -975,10 +975,15 @@ export const SAMPLES: CatalogSample[] = [
   // --------------------------------------------------------- Dynamic values
   {
     group: "Dynamic values",
-    title: "Function values: formatString, formatCurrency, pluralize",
-    covers: ["Slider", "Text", "List"],
+    title: "Function values: formatString, calc, series, formatCurrency",
+    covers: ["Slider", "Text", "List", "Chart"],
     components: [
-      { id: "root", component: "Column", gap: 3, children: ["s", "t", "l"] },
+      {
+        id: "root",
+        component: "Column",
+        gap: 3,
+        children: ["s", "t", "l", "ch"],
+      },
       {
         id: "s",
         component: "Slider",
@@ -994,7 +999,7 @@ export const SAMPLES: CatalogSample[] = [
           "@call": "formatString",
           args: {
             value:
-              "${/seats} ${pluralize(value: /seats, one: 'seat', other: 'seats')} cost ${formatCurrency(value: /total, currency: 'EUR')} per month",
+              "${/seats} ${pluralize(value: /seats, one: 'seat', other: 'seats')} cost ${formatCurrency(value: calc(expression: 'seats * 12', seats: /seats), currency: 'EUR')} per month",
           },
         },
       },
@@ -1025,8 +1030,26 @@ export const SAMPLES: CatalogSample[] = [
           },
         ],
       },
+      {
+        id: "ch",
+        component: "Chart",
+        chartType: "bar",
+        title: "Cumulative cost (series over the slider)",
+        xKey: "month",
+        series: [{ key: "cost", label: "Cost" }],
+        data: {
+          "@call": "series",
+          args: {
+            count: 6,
+            variable: "m",
+            item: { month: "M${m}", cost: "${m * seats * 12}" },
+            seats: { "@path": "/seats" },
+          },
+        },
+        height: 180,
+      },
     ],
-    data: { seats: 4, total: 48 },
+    data: { seats: 4 },
   },
   {
     group: "Dynamic values",

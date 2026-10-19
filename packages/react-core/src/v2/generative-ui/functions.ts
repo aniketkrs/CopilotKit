@@ -1,4 +1,7 @@
-import { A2UI_BASIC_FUNCTIONS, isValidationResult } from "@copilotkit/shared";
+import {
+  GENERATIVE_UI_FUNCTIONS,
+  isValidationResult,
+} from "@copilotkit/shared";
 import type { A2UIValidationResult } from "@copilotkit/shared";
 
 /**
@@ -166,8 +169,11 @@ export function openUrlSafely(url: unknown) {
   window.open(parsed.href, "_blank", "noopener,noreferrer");
 }
 
-/** The basic functions, except `formatString`, which needs the resolver. */
-export const BASIC_FUNCTIONS: Readonly<Record<string, BasicFunction>> = {
+/**
+ * The basic functions, except `formatString`, which needs the resolver.
+ * `calc` and `series` are added by `resolve.ts`, which imports both.
+ */
+export const BASIC_FUNCTIONS: Record<string, BasicFunction> = {
   required: ({ value }) => {
     const isEmpty =
       value === undefined ||
@@ -265,10 +271,10 @@ export const BASIC_FUNCTIONS: Readonly<Record<string, BasicFunction>> = {
 
 /** True when the basic function `name` must run from a user gesture. */
 export function requiresUserActivation(name: string) {
-  return A2UI_BASIC_FUNCTIONS[name]?.requiresUserActivation === true;
+  return GENERATIVE_UI_FUNCTIONS[name]?.requiresUserActivation === true;
 }
 
 /** True when a basic function gives a ValidationResult. */
 export function givesValidationResult(name: string) {
-  return A2UI_BASIC_FUNCTIONS[name]?.returnType === "validationResult";
+  return GENERATIVE_UI_FUNCTIONS[name]?.returnType === "validationResult";
 }

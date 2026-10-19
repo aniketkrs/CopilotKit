@@ -5,12 +5,18 @@ import {
   isPathBinding,
   isValidationResult,
 } from "@copilotkit/shared";
+import { calc, series } from "./calc";
 import {
   BASIC_FUNCTIONS,
   ExpressionError,
   givesValidationResult,
   requiresUserActivation,
 } from "./functions";
+
+// The CopilotKit value functions join the registry here, because calc.ts
+// uses the error type and truthOf of functions.ts.
+BASIC_FUNCTIONS.calc = calc;
+BASIC_FUNCTIONS.series = series;
 
 /**
  * Resolves the dynamic values of A2UI 1.0 in a prop, an event context, or

@@ -174,6 +174,28 @@ describe("resolveDynamicValue: formatString", () => {
     expect(format("${@index}", { data, basePath: "/items/1" }).value).toBe("1");
   });
 
+  it("computes with calc inside formatString and resolves series to a list", () => {
+    expect(
+      format(
+        "${formatCurrency(value: calc(expression: 'qty * price * 0.8', qty: /qty, price: /price), currency: 'EUR')}",
+      ).value,
+    ).toBe("€3,837.60");
+    const { value, paths } = resolve({
+      "@call": "series",
+      args: {
+        count: 2,
+        variable: "m",
+        item: { month: "${m}", total: "${m * price}" },
+        price: { "@path": "/price" },
+      },
+    });
+    expect(value).toEqual([
+      { month: 1, total: 1599 },
+      { month: 2, total: 3198 },
+    ]);
+    expect([...paths]).toEqual(["/price"]);
+  });
+
   it("keeps an escaped \\${ literal and reports a bad expression", () => {
     expect(format("cost: \\${/price}").value).toBe("cost: ${/price}");
     expect(() => format("${/price")).toThrow("unclosed ${");

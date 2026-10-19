@@ -128,6 +128,33 @@ describe("dynamic values in props", () => {
     expect(v.queryByTestId("text")).toBeNull();
   });
 
+  it("recomputes a series when the data it reads changes", async () => {
+    const v = renderSurface(
+      ui,
+      [
+        {
+          id: "root",
+          component: "Rows",
+          rows: {
+            "@call": "series",
+            args: {
+              count: 2,
+              variable: "m",
+              item: { label: "M${m}", value: "${m * seats * 29}" },
+              seats: { "@path": "/seats" },
+            },
+          },
+        },
+      ],
+      { seats: 2 },
+    );
+    expect((await v.findByTestId("row-M2")).textContent).toBe("M2: 116");
+    v.update(setData("/seats", 3));
+    await waitFor(() =>
+      expect(v.getByTestId("row-M2").textContent).toBe("M2: 174"),
+    );
+  });
+
   it("gives @index to a template item inside a function value", async () => {
     const v = renderSurface(
       ui,

@@ -1,14 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { A2UI_BASIC_FUNCTIONS } from "@copilotkit/shared";
+import { GENERATIVE_UI_FUNCTIONS } from "@copilotkit/shared";
 import { BASIC_FUNCTIONS, ExpressionError, openUrlSafely } from "../functions";
+// The resolver adds calc and series to the registry.
+import "../resolve";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const fn = (name: string, args: Record<string, unknown>): any =>
   BASIC_FUNCTIONS[name](args);
 
 describe("basic functions", () => {
-  it("implements every basic function that the shared list names, except formatString", () => {
-    const names = Object.keys(A2UI_BASIC_FUNCTIONS).filter(
+  it("implements every built-in function that the shared list names, except formatString", () => {
+    const names = Object.keys(GENERATIVE_UI_FUNCTIONS).filter(
       (name) => name !== "formatString",
     );
     expect(Object.keys(BASIC_FUNCTIONS).sort()).toEqual(names.sort());

@@ -94,6 +94,12 @@ describe("GENERATIVE_UI_MARKDOWN_GUIDELINES", () => {
     );
     expect(guide).toContain("formatString interpolates ${...}");
     expect(guide).toContain("There are no operators in ${...}");
+    expect(guide).toContain(
+      '{"@call":"calc","args":{"expression":"seats * 29 * (annual ? 0.8 : 1)"',
+    );
+    expect(guide).toContain(
+      '{"@call":"series","args":{"count":12,"variable":"m"',
+    );
     expect(guide).toContain('{"@call":"@index","args":{"offset":1}}');
   });
 

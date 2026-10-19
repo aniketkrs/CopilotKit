@@ -4,7 +4,7 @@ import {
   generativeUIGuideFeatures,
   GENERATIVE_UI_MARKDOWN_GUIDELINES_DESCRIPTION,
   GENERATIVE_UI_MARKDOWN_SCHEMA_CONTEXT_DESCRIPTION,
-  A2UI_BASIC_FUNCTIONS,
+  GENERATIVE_UI_FUNCTIONS,
   childRefKind,
 } from "@copilotkit/shared";
 import type {
@@ -240,7 +240,7 @@ export function buildCompactGenerativeUISchema(
   // The basic functions of A2UI come first; an app function of the same
   // name replaces one.
   const functions = Object.fromEntries([
-    ...Object.entries(A2UI_BASIC_FUNCTIONS).map(([name, fn]) => [
+    ...Object.entries(GENERATIVE_UI_FUNCTIONS).map(([name, fn]) => [
       name,
       { description: fn.description, parameters: fn.parameters },
     ]),
