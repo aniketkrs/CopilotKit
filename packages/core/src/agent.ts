@@ -42,7 +42,10 @@ import type { RuntimeRequestInit } from "./utils/runtime-request";
 import type { ConnectionReplayLifecycle } from "./utils/connect-replay";
 import { ɵconnectWithoutEventVerification } from "./utils/connect-replay";
 import type { CopilotKitMessageFilter } from "./core/message-filter";
-import { ɵrepairToolCallPairs } from "./core/message-filter";
+import {
+  ɵkeepToolResultsWithCalls,
+  ɵrepairToolCallPairs,
+} from "./core/message-filter";
 
 type ResolvedRuntimeMode = RuntimeMode | "pending";
 
@@ -286,17 +289,23 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
   }
 
   /**
-   * Build the outbound payload: narrow it with the configured message filter,
-   * then put every tool result back directly after the call that issued it.
+   * Build the outbound payload, keeping every tool result with the call that
+   * issued it.
    *
-   * The pair repair runs on every send, filter or not. The client store can
-   * hold a tool result detached from its call on its own: when a backend's
-   * `MESSAGES_SNAPSHOT` carries a tool message under a different id than the
-   * streamed `TOOL_CALL_RESULT` did, the `@ag-ui/client` merge drops the copy
-   * placed after its call and appends the snapshot's copy at the end. A
-   * backend that rebuilds its state from that payload (a LangGraph agent whose
-   * checkpoint is gone) discards every result it cannot pair, and the model
-   * loses them for good. On a well-formed thread the repair is a no-op.
+   * Two paths, deliberately separate:
+   *
+   * - **No filter** (or a filter that failed and fell back to the full
+   *   thread): `ɵkeepToolResultsWithCalls` moves only detached tool results
+   *   back behind their issuing call and leaves everything else exactly as
+   *   stored. The client store can detach a result on its own: when a
+   *   backend's `MESSAGES_SNAPSHOT` carries a tool message under a different
+   *   id than the streamed `TOOL_CALL_RESULT` did, the `@ag-ui/client` merge
+   *   drops the copy placed after its call and appends the snapshot's copy at
+   *   the end. A backend that rebuilds its state from that payload (a
+   *   LangGraph agent whose checkpoint is gone) discards every result it
+   *   cannot pair, and the model loses them for good.
+   * - **Filter**: `ɵrepairToolCallPairs(kept, full)` restores the pairs the
+   *   filter broke, as it always has.
    *
    * **Called from the HTTP paths only, and that placement is the Intelligence
    * exemption.** An earlier revision applied the filter in
@@ -328,35 +337,42 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
     const full = input.messages;
     const kept = this.#applyMessageFilter(full);
 
-    // The repair is a best-effort fix-up, so it is guarded on its own: if it
-    // throws (a stored message the repair cannot read, say `toolCalls:
-    // [null]`), the run goes out exactly as it did before the repair existed —
-    // the input unchanged, untrimmed and unrepaired. It is kept apart from the
-    // filter call so a repair bug is never reported as the app's filter
-    // failing.
+    // The pairing step is a best-effort fix-up, so it is guarded on its own
+    // and kept apart from the filter call: a bug here is reported as the
+    // repair failing, never as the app's filter failing. If it throws, the
+    // payload goes out as it would have without it — the input unchanged
+    // when nothing was filtered, the filter's own output (unrepaired) when a
+    // filter ran, so its trimming or redaction is not thrown away.
     try {
-      return { ...input, messages: ɵrepairToolCallPairs(kept, full) };
+      const messages =
+        kept === undefined
+          ? ɵkeepToolResultsWithCalls(full)
+          : ɵrepairToolCallPairs(kept, full);
+      return { ...input, messages };
     } catch (error) {
       console.warn(
-        "ProxiedCopilotRuntimeAgent: tool-call repair failed; sending the message history unfiltered and unrepaired instead.",
+        kept === undefined
+          ? "ProxiedCopilotRuntimeAgent: tool-call repair failed; sending the message history unrepaired instead."
+          : "ProxiedCopilotRuntimeAgent: tool-call repair failed; sending the filtered message history unrepaired instead.",
         error,
       );
-      return input;
+      return kept === undefined ? input : { ...input, messages: kept };
     }
   }
 
   /**
-   * Run the configured filter, or return `full` when there is none.
+   * Run the configured filter. Returns `undefined` when there is no filter or
+   * the filter's output cannot be used, meaning "send the full thread".
    *
-   * A filter that throws, returns a non-array, or returns an entry that is
-   * not a message object falls back to the untrimmed thread (which the caller
-   * then repairs) rather than failing the run. Trimming is an optimization,
-   * and taking the user's message down with it would be the worse outcome;
-   * the warning is what surfaces the bug.
+   * A filter that throws, returns a non-array, or returns an array with an
+   * entry that is not a message object (a hole included) falls back to the
+   * untrimmed thread rather than failing the run. Trimming is an
+   * optimization, and taking the user's message down with it would be the
+   * worse outcome; the warning is what surfaces the bug.
    */
-  #applyMessageFilter(full: Message[]): Message[] {
+  #applyMessageFilter(full: Message[]): Message[] | undefined {
     const filter = this._messageFilter;
-    if (!filter) return full;
+    if (!filter) return undefined;
 
     let kept: unknown;
     try {
@@ -366,19 +382,23 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
         "ProxiedCopilotRuntimeAgent: messageFilter failed; sending the full message history instead.",
         error,
       );
-      return full;
+      return undefined;
     }
     if (!Array.isArray(kept)) {
       console.warn(
         "ProxiedCopilotRuntimeAgent: messageFilter returned a non-array value; sending the full message history instead.",
       );
-      return full;
+      return undefined;
     }
-    if (!kept.every((entry) => typeof entry === "object" && entry !== null)) {
-      console.warn(
-        "ProxiedCopilotRuntimeAgent: messageFilter returned an entry that is not a message; sending the full message history instead.",
-      );
-      return full;
+    // An index loop, not `every`: `every` skips the holes of a sparse array.
+    for (let index = 0; index < kept.length; index++) {
+      const entry: unknown = kept[index];
+      if (typeof entry !== "object" || entry === null) {
+        console.warn(
+          "ProxiedCopilotRuntimeAgent: messageFilter returned an entry that is not a message; sending the full message history instead.",
+        );
+        return undefined;
+      }
     }
     return kept as Message[];
   }

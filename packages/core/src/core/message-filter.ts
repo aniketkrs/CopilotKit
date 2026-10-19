@@ -41,16 +41,7 @@ function resultCallIdOf(message: Message): string | undefined {
 }
 
 /**
- * Repair the tool-call pairs a filter broke, or that the client store holds
- * out of order.
- *
- * It runs on every send, filter or not, with `kept === full` when there is no
- * filter. The store can detach a tool result from its call on its own: when a
- * backend's `MESSAGES_SNAPSHOT` carries a tool message under a different id
- * than the streamed `TOOL_CALL_RESULT`, the `@ag-ui/client` merge drops the
- * copy placed after its call and appends the snapshot's copy at the end. Each
- * assistant turn here pulls its results in directly behind it, so that order
- * goes out repaired, and a well-formed thread goes out unchanged.
+ * Repair the tool-call pairs a filter broke.
  *
  * Every provider rejects a half pair. A tool result whose call is gone reads as
  * a reply to nothing, and an assistant tool call whose result is gone leaves
@@ -137,4 +128,111 @@ export function ɵrepairToolCallPairs(
   }
 
   return repaired;
+}
+
+/**
+ * Move each detached tool result back behind the assistant call that issued
+ * it, and change nothing else. Used for unfiltered sends only; a configured
+ * filter goes through {@link ɵrepairToolCallPairs} instead.
+ *
+ * The client store can detach a tool result from its call on its own: when a
+ * backend's `MESSAGES_SNAPSHOT` carries a tool message under a different id
+ * than the streamed `TOOL_CALL_RESULT`, the `@ag-ui/client` merge drops the
+ * copy placed after its call and appends the snapshot's copy at the end,
+ * leaving `assistant(tool_call), assistant(text), tool(result)`. A backend that
+ * rebuilds its state from that payload discards every result it cannot pair.
+ *
+ * The move is deliberately minimal, and it is the same algorithm the
+ * `@ag-ui/client` snapshot reducer applies:
+ *
+ * - Everything is by list position. The same object or id appearing twice is
+ *   two independent slots. Nothing is dropped, deduplicated, or added, and
+ *   only tool-role messages ever change position.
+ * - The anchor is the last message so far that is neither `tool` nor
+ *   `activity`. Each tool call an assistant issues opens a slot, queued per
+ *   call id.
+ * - A result whose call id has an open slot on the anchor answers it (the
+ *   earliest such) and stays put. Otherwise it answers the oldest open slot
+ *   for its id and moves behind that issuer, after the tool and activity
+ *   messages already following it, in stored order. A result with no open
+ *   slot (its call is later, absent, or already answered) stays put.
+ * - Malformed entries (non-object messages, non-array `toolCalls`, call
+ *   entries without a string `id`) are ignored rather than thrown on.
+ *
+ * Returns `messages` itself when nothing moved.
+ */
+export function ɵkeepToolResultsWithCalls(messages: Message[]): Message[] {
+  const openSlots = new Map<string, { issuer: number; answered: boolean }[]>();
+  const movedBehind = new Map<number, number[]>();
+  const moved = new Set<number>();
+  let anchor = -1;
+
+  for (let index = 0; index < messages.length; index++) {
+    const message: unknown = messages[index];
+    const role = roleOf(message);
+
+    if (role === "activity") continue;
+
+    if (role !== "tool") {
+      anchor = index;
+      const calls =
+        role === "assistant"
+          ? (message as { toolCalls?: unknown }).toolCalls
+          : undefined;
+      if (!Array.isArray(calls)) continue;
+      for (const call of calls) {
+        if (typeof call !== "object" || call === null) continue;
+        const callId = (call as { id?: unknown }).id;
+        if (typeof callId !== "string") continue;
+        const queue = openSlots.get(callId) ?? [];
+        queue.push({ issuer: index, answered: false });
+        openSlots.set(callId, queue);
+      }
+      continue;
+    }
+
+    const callId = (message as { toolCallId?: unknown }).toolCallId;
+    if (typeof callId !== "string") continue;
+    const queue = openSlots.get(callId);
+    if (!queue) continue;
+
+    const inPlace = queue.find((s) => !s.answered && s.issuer === anchor);
+    if (inPlace) {
+      inPlace.answered = true;
+      continue;
+    }
+    const oldest = queue.find((s) => !s.answered);
+    if (!oldest) continue;
+    oldest.answered = true;
+    moved.add(index);
+    const behind = movedBehind.get(oldest.issuer) ?? [];
+    behind.push(index);
+    movedBehind.set(oldest.issuer, behind);
+  }
+
+  if (moved.size === 0) return messages;
+
+  const result: Message[] = [];
+  let openIssuer = -1;
+  const flush = () => {
+    for (const index of movedBehind.get(openIssuer) ?? []) {
+      result.push(messages[index] as Message);
+    }
+  };
+  for (let index = 0; index < messages.length; index++) {
+    if (moved.has(index)) continue;
+    const role = roleOf(messages[index]);
+    if (role !== "tool" && role !== "activity") {
+      flush();
+      openIssuer = index;
+    }
+    result.push(messages[index] as Message);
+  }
+  flush();
+  return result;
+}
+
+function roleOf(message: unknown): unknown {
+  if (typeof message !== "object" || message === null) return undefined;
+  return (message as { role?: unknown }).role;
 }

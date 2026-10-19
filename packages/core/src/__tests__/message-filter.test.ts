@@ -4,7 +4,10 @@ import { EMPTY } from "rxjs";
 import { ProxiedCopilotRuntimeAgent } from "../agent";
 import { CopilotKitCore } from "../core";
 import * as messageFilterModule from "../core/message-filter";
-import { ɵrepairToolCallPairs } from "../core/message-filter";
+import {
+  ɵkeepToolResultsWithCalls,
+  ɵrepairToolCallPairs,
+} from "../core/message-filter";
 import {
   createSuggestionsConfig,
   waitForCondition,
@@ -160,6 +163,306 @@ describe("ɵrepairToolCallPairs", () => {
     ];
 
     expect(ɵrepairToolCallPairs(full, full)).toEqual(full);
+  });
+});
+
+const userMsg = (id: string) => ({ id, role: "user", content: id }) as Message;
+const textMsg = (id: string) =>
+  ({ id, role: "assistant", content: id }) as Message;
+const callsMsg = (id: string, ...callIds: string[]) =>
+  ({
+    id,
+    role: "assistant",
+    content: "",
+    toolCalls: callIds.map((callId) => ({
+      id: callId,
+      type: "function",
+      function: { name: "f", arguments: "{}" },
+    })),
+  }) as Message;
+const toolMsg = (id: string, callId: string) =>
+  ({ id, role: "tool", toolCallId: callId, content: id }) as Message;
+const reasoningMsg = (id: string) =>
+  ({ id, role: "reasoning", content: id }) as Message;
+const activityMsg = (id: string) =>
+  ({ id, role: "activity", activityType: "x", content: {} }) as never;
+
+// mulberry32: a tiny seeded PRNG, so every run checks the same histories
+// and a failure reproduces from its seed.
+const prng = (seed: number) => () => {
+  seed = (seed + 0x6d2b79f5) | 0;
+  let t = seed;
+  t = Math.imul(t ^ (t >>> 15), t | 1);
+  t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+};
+
+const roleOf = (message: Message) =>
+  (message as { role?: string } | null)?.role;
+const slotOf = (m: Message) => (m as unknown as { slot: number }).slot;
+
+describe("ɵkeepToolResultsWithCalls", () => {
+  it("moves a detached result back behind its call (the snapshot-merge shape)", () => {
+    const u = userMsg("u");
+    const a1 = callsMsg("a1", "c");
+    const a2 = textMsg("a2");
+    const t = toolMsg("t", "c");
+
+    expect(ɵkeepToolResultsWithCalls([u, a1, a2, t])).toEqual([u, a1, t, a2]);
+  });
+
+  it("returns the very same array for a well-formed thread", () => {
+    const thread = [
+      userMsg("u1"),
+      callsMsg("a1", "c1", "c2"),
+      toolMsg("t1", "c1"),
+      activityMsg("act"),
+      toolMsg("t2", "c2"),
+      textMsg("a2"),
+    ];
+
+    expect(ɵkeepToolResultsWithCalls(thread)).toBe(thread);
+  });
+
+  it("leaves results in place when call ids are reused across turns", () => {
+    const thread = [
+      userMsg("u1"),
+      callsMsg("a1", "call_0"),
+      toolMsg("t1", "call_0"),
+      textMsg("x1"),
+      userMsg("u2"),
+      callsMsg("a2", "call_0"),
+      toolMsg("t2", "call_0"),
+      textMsg("x2"),
+    ];
+
+    expect(ɵkeepToolResultsWithCalls(thread)).toBe(thread);
+  });
+
+  it("pairs several detached results for one reused id oldest call first", () => {
+    const a1 = callsMsg("A1", "c");
+    const a2 = callsMsg("A2", "c");
+    const x = textMsg("X");
+    const t1 = toolMsg("T1", "c");
+    const t2 = toolMsg("T2", "c");
+
+    expect(ɵkeepToolResultsWithCalls([a1, a2, x, t1, t2])).toEqual([
+      a1,
+      t1,
+      a2,
+      t2,
+      x,
+    ]);
+  });
+
+  it("treats one object appearing twice as two independent slots", () => {
+    const a = callsMsg("a", "c");
+    const t = toolMsg("t", "c");
+    const x1 = textMsg("x1");
+    const x2 = textMsg("x2");
+
+    const out = ɵkeepToolResultsWithCalls([a, x1, t, a, x2, t]);
+
+    expect(out).toHaveLength(6);
+    [a, t, x1, a, t, x2].forEach((message, index) =>
+      expect(out[index]).toBe(message),
+    );
+  });
+
+  it("leaves a result stored before its call where it is", () => {
+    const thread = [
+      userMsg("u"),
+      toolMsg("t", "c"),
+      callsMsg("a", "c"),
+      textMsg("x"),
+    ];
+
+    expect(ɵkeepToolResultsWithCalls(thread)).toBe(thread);
+  });
+
+  it("keeps both results for one call, moving only the one that answers it", () => {
+    const a = callsMsg("a", "c");
+    const x = textMsg("x");
+    const t1 = toolMsg("t1", "c");
+    const t2 = toolMsg("t2", "c");
+
+    // t1 answers the call and moves; t2 has nothing left to answer and stays.
+    expect(ɵkeepToolResultsWithCalls([a, x, t1, t2])).toEqual([a, t1, x, t2]);
+  });
+
+  it("moves a result past reasoning stored between it and its call, but not past activity", () => {
+    const u = userMsg("u");
+    const a = callsMsg("a", "c");
+    const r = reasoningMsg("r");
+    const t = toolMsg("t", "c");
+    expect(ɵkeepToolResultsWithCalls([u, a, r, t])).toEqual([u, a, t, r]);
+
+    const viaActivity = [u, a, activityMsg("act"), t];
+    expect(ɵkeepToolResultsWithCalls(viaActivity)).toBe(viaActivity);
+  });
+
+  it("places a moved result after the results already following its call", () => {
+    const a = callsMsg("a", "c1", "c2");
+    const t1 = toolMsg("t1", "c1");
+    const act = activityMsg("act");
+    const x = textMsg("x");
+    const t2 = toolMsg("t2", "c2");
+
+    expect(ɵkeepToolResultsWithCalls([a, t1, act, x, t2])).toEqual([
+      a,
+      t1,
+      act,
+      t2,
+      x,
+    ]);
+  });
+
+  it("skips malformed entries instead of throwing, and passes them through", () => {
+    const u = userMsg("u");
+    const odd = {
+      id: "odd",
+      role: "assistant",
+      toolCalls: [null, 5, { id: 3 }, { id: "c" }],
+    } as unknown as Message;
+    const notArray = {
+      id: "na",
+      role: "assistant",
+      toolCalls: "nope",
+    } as unknown as Message;
+    const x = textMsg("x");
+    const t = toolMsg("t", "c");
+    const noCallId = { id: "t?", role: "tool" } as unknown as Message;
+    const hole = null as unknown as Message;
+
+    const thread = [u, odd, notArray, x, hole, noCallId, t];
+    const out = ɵkeepToolResultsWithCalls(thread);
+
+    expect(out).toEqual([u, odd, t, notArray, x, hole, noCallId]);
+
+    const untouched = [u, hole, notArray, noCallId, x];
+    expect(ɵkeepToolResultsWithCalls(untouched)).toBe(untouched);
+  });
+
+  describe("properties over random histories", () => {
+    const SEED = 0x7877;
+    const RUNS = 4000;
+    const MAX_LENGTH = 14;
+    const ID_POOL = ["c0", "c1", "c2"];
+
+    const randomHistory = (random: () => number): Message[] => {
+      const pick = <T>(items: T[]) =>
+        items[Math.floor(random() * items.length)]!;
+      const length = Math.floor(random() * (MAX_LENGTH + 1));
+      const history: Message[] = [];
+      for (let index = 0; index < length; index++) {
+        // Re-insert an earlier entry (same reference) a fifth of the time.
+        if (history.length > 0 && random() < 0.2) {
+          history.push(pick(history));
+          continue;
+        }
+        const id = `m${index}`;
+        const kind = random();
+        if (kind < 0.12) history.push(userMsg(id));
+        else if (kind < 0.42) {
+          const count = Math.floor(random() * 4);
+          const ids = Array.from({ length: count }, () => pick(ID_POOL));
+          history.push(callsMsg(id, ...ids));
+        } else if (kind < 0.52) history.push(textMsg(id));
+        else if (kind < 0.6) history.push(reasoningMsg(id));
+        else if (kind < 0.88) history.push(toolMsg(id, pick(ID_POOL)));
+        else if (kind < 0.95) history.push(activityMsg(id));
+        else history.push(null as unknown as Message);
+      }
+      return history;
+    };
+
+    const isBoundary = (message: Message) =>
+      roleOf(message) !== "tool" && roleOf(message) !== "activity";
+    const counts = (messages: Message[]) => {
+      const tally = new Map<Message, number>();
+      for (const m of messages) tally.set(m, (tally.get(m) ?? 0) + 1);
+      return tally;
+    };
+    /** For each position, the index of the last boundary at or before it. */
+    const anchorsOf = (messages: Message[]) => {
+      let anchor = -1;
+      return messages.map((m, index) =>
+        isBoundary(m) ? (anchor = index) : anchor,
+      );
+    };
+
+    const histories = (() => {
+      const random = prng(SEED);
+      return Array.from({ length: RUNS }, () => randomHistory(random));
+    })();
+
+    it("never adds, drops, or duplicates a message", () => {
+      for (const history of histories) {
+        const out = ɵkeepToolResultsWithCalls(history);
+        expect(out).toHaveLength(history.length);
+        expect(counts(out)).toEqual(counts(history));
+      }
+    });
+
+    it("keeps every non-tool message in its relative order", () => {
+      for (const history of histories) {
+        const out = ɵkeepToolResultsWithCalls(history);
+        const before = history.filter((m) => roleOf(m) !== "tool");
+        const after = out.filter((m) => roleOf(m) !== "tool");
+        expect(after).toHaveLength(before.length);
+        before.forEach((m, index) => expect(after[index]).toBe(m));
+      }
+    });
+
+    it("is idempotent", () => {
+      for (const history of histories) {
+        const once = ɵkeepToolResultsWithCalls(history);
+        const twice = ɵkeepToolResultsWithCalls(once);
+        expect(twice).toBe(once);
+      }
+    });
+
+    it("returns the input itself whenever nothing moved", () => {
+      for (const history of histories) {
+        const out = ɵkeepToolResultsWithCalls(history);
+        const unchanged = out.every((m, index) => m === history[index]);
+        if (unchanged) expect(out).toBe(history);
+        else expect(out).not.toBe(history);
+      }
+    });
+
+    it("lands every moved result behind an earlier call for its id, with only tool or activity messages between", () => {
+      for (const history of histories) {
+        // Distinct wrappers tag each input slot, so a moved slot can be told
+        // apart from an alias of it that stayed. Position-based pairing must
+        // give the same order with or without the aliasing.
+        const tagged = history.map((m, slot) =>
+          m === null ? m : ({ ...m, slot } as unknown as Message),
+        );
+        const out = ɵkeepToolResultsWithCalls(tagged);
+        expect(out.map((m) => (m === null ? m : history[slotOf(m)]))).toEqual(
+          ɵkeepToolResultsWithCalls(history),
+        );
+
+        const inAnchors = anchorsOf(tagged);
+        const outAnchors = anchorsOf(out);
+        out.forEach((m, index) => {
+          if (roleOf(m) !== "tool") return;
+          const slot = slotOf(m);
+          const anchorBefore = inAnchors[slot]!;
+          const anchorAfter = outAnchors[index]!;
+          const issuerAfter = anchorAfter === -1 ? undefined : out[anchorAfter];
+          if (issuerAfter === tagged[anchorBefore]) return; // stayed put
+          // Moved: now behind an assistant that issued its id earlier.
+          expect(roleOf(issuerAfter!)).toBe("assistant");
+          expect(slotOf(issuerAfter!)).toBeLessThan(slot);
+          const callIds = (
+            (issuerAfter as { toolCalls?: { id: string }[] }).toolCalls ?? []
+          ).map((call) => call.id);
+          expect(callIds).toContain((m as { toolCallId?: string }).toolCallId);
+        });
+      }
+    });
   });
 });
 
@@ -525,7 +828,7 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
     );
   });
 
-  it("blames the tool-call repair, not a filter that worked, when the repair throws", async () => {
+  it("blames the tool-call repair, not a filter that worked, and still sends the filter's output when the repair throws", async () => {
     // Forced through the module export: the repair failing is what is under
     // test, independent of which malformed input happens to trip it.
     vi.spyOn(messageFilterModule, "ɵrepairToolCallPairs").mockImplementation(
@@ -546,8 +849,10 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
       newMessages: expect.any(Array),
     });
 
+    // The filter worked, so its trimming (or redaction) still applies; only
+    // the repair on top of it is skipped.
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(sentMessages(init).map((m) => m.id)).toEqual(["u1", "a1", "u2"]);
+    expect(sentMessages(init).map((m) => m.id)).toEqual(["u2"]);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining("tool-call repair failed"),
@@ -560,11 +865,15 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
   });
 
   it("still sends the thread when both the filter and the repair throw", async () => {
-    vi.spyOn(messageFilterModule, "ɵrepairToolCallPairs").mockImplementation(
-      () => {
-        throw new Error("repair bug");
-      },
-    );
+    // A failed filter falls back to the full thread, which takes the
+    // unfiltered path, so that is the step forced to throw here.
+    const repair = vi.spyOn(messageFilterModule, "ɵrepairToolCallPairs");
+    vi.spyOn(
+      messageFilterModule,
+      "ɵkeepToolResultsWithCalls",
+    ).mockImplementation(() => {
+      throw new Error("repair bug");
+    });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const agent = new ProxiedCopilotRuntimeAgent({
       runtimeUrl: "https://runtime.example",
@@ -586,6 +895,7 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
       expect.stringContaining("messageFilter failed"),
       expect.stringContaining("tool-call repair failed"),
     ]);
+    expect(repair).not.toHaveBeenCalled();
   });
 
   it("applies a filter assigned after construction", async () => {
@@ -634,6 +944,100 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
     const envelope = JSON.parse(init.body as string);
     expect(envelope.body.messages.map((m: Message) => m.id)).toEqual(["u2"]);
   });
+
+  it("does not put back a result whose call the filter redacted from its copy", async () => {
+    // The filter decides what a kept message looks like. Stripping the calls
+    // from an assistant turn (and their results with it) is a valid, paired
+    // payload, so the repair must not resurrect the results from the store.
+    const call = createToolCallMessage("lookup");
+    const result = createToolResultMessage(toolCallIdOf(call), "secret");
+    const agent = new ProxiedCopilotRuntimeAgent({
+      runtimeUrl: "https://runtime.example",
+      agentId: "a",
+      transport: "rest",
+      messageFilter: (messages) =>
+        messages
+          .filter((m) => m.role !== "tool")
+          .map((m) =>
+            m.role === "assistant" ? { ...m, toolCalls: undefined } : m,
+          ),
+    });
+    agent.setMessages([
+      createMessage({ id: "u1" }),
+      call,
+      createAssistantMessage({ id: "a2" }),
+      result,
+    ]);
+
+    await agent.runAgent();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const sent = sentMessages(init);
+    expect(sent.map((m) => m.id)).toEqual(["u1", call.id, "a2"]);
+    expect(sent.some((m) => m.role === "tool")).toBe(false);
+  });
+
+  it("never sends a message twice under an identity filter, even with a shared id", async () => {
+    // The filter hands back clones, so they cannot be matched to the store by
+    // reference; a kept call must not also be restored from the store.
+    const call = createToolCallMessage("lookup", {}, { id: "x" });
+    const result = createToolResultMessage(toolCallIdOf(call), "done");
+    const agent = new ProxiedCopilotRuntimeAgent({
+      runtimeUrl: "https://runtime.example",
+      agentId: "a",
+      transport: "rest",
+      messageFilter: (messages) => messages,
+    });
+    agent.setMessages([
+      createMessage({ id: "u1" }),
+      call,
+      result,
+      createAssistantMessage({ id: "x", content: "same id" }),
+    ]);
+
+    await agent.runAgent();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const sent = sentMessages(init);
+    expect(sent.length).toBeLessThanOrEqual(4);
+    expect(sent.filter((m) => toolCallIdsOf(m).length > 0)).toHaveLength(1);
+    expect(sent.filter((m) => m.role === "tool")).toHaveLength(1);
+  });
+
+  it("routes a filter's output through the filter repair, not the unfiltered move", async () => {
+    const keep = vi.spyOn(messageFilterModule, "ɵkeepToolResultsWithCalls");
+    const repair = vi.spyOn(messageFilterModule, "ɵrepairToolCallPairs");
+    const agent = new ProxiedCopilotRuntimeAgent({
+      runtimeUrl: "https://runtime.example",
+      agentId: "a",
+      transport: "rest",
+      messageFilter: (messages) => messages.slice(-1),
+    });
+    agent.setMessages(history());
+
+    await agent.runAgent();
+
+    expect(repair).toHaveBeenCalledTimes(1);
+    expect(keep).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the full thread when the filter returns a sparse array", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const agent = new ProxiedCopilotRuntimeAgent({
+      runtimeUrl: "https://runtime.example",
+      agentId: "a",
+      transport: "rest",
+      // eslint-disable-next-line no-sparse-arrays
+      messageFilter: (messages) => [messages[0]!, , messages[2]!] as Message[],
+    });
+    agent.setMessages(history());
+
+    await agent.runAgent();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(sentMessages(init).map((m) => m.id)).toEqual(["u1", "a1", "u2"]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("not a message"));
+  });
 });
 
 describe("ProxiedCopilotRuntimeAgent tool-call pairing without a filter", () => {
@@ -642,7 +1046,8 @@ describe("ProxiedCopilotRuntimeAgent tool-call pairing without a filter", () => 
   // tool message under different ids, the snapshot merge drops the streamed
   // copy (placed after its call) and appends the snapshot's copy at the tail.
   // A backend rebuilding its state from that payload drops the result it
-  // cannot pair, so the pairs are restored on every send, filter or not.
+  // cannot pair, so every unfiltered send moves detached results back behind
+  // their call (and changes nothing else).
   const originalFetch = global.fetch;
   let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -727,12 +1132,14 @@ describe("ProxiedCopilotRuntimeAgent tool-call pairing without a filter", () => 
 
     await agent.runAgent();
 
+    // resultB already sits behind the call and stays; the detached resultA
+    // joins it there, after the results already in place.
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(sentMessages(init).map((m) => m.id)).toEqual([
       "u1",
       call.id,
-      resultA.id,
       resultB.id,
+      resultA.id,
       "a2",
     ]);
   });
@@ -823,13 +1230,55 @@ describe("ProxiedCopilotRuntimeAgent tool-call pairing without a filter", () => 
     ]);
   });
 
+  it("re-pairs on the single-route run request too", async () => {
+    const { call, result, messages } = detached();
+    const agent = new ProxiedCopilotRuntimeAgent({
+      runtimeUrl: "https://runtime.example",
+      agentId: "a",
+      transport: "single",
+    });
+    agent.setMessages(messages);
+
+    await agent.runAgent();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const envelope = JSON.parse(init.body as string);
+    expect(envelope.method).toBe("agent/run");
+    expect(envelope.body.messages.map((m: Message) => m.id)).toEqual([
+      "u1",
+      call.id,
+      result.id,
+      "a2",
+    ]);
+  });
+
+  it("sends every stored message, even two that share an id", async () => {
+    // The unfiltered step works by position, so a duplicated id (a re-seeded
+    // store, a backend that reuses ids) is never mistaken for a repeat.
+    const { call, result, messages } = detached();
+    const dupe = createMessage({ id: "u1", content: "again" });
+    const agent = agentWith([...messages, dupe]);
+
+    await agent.runAgent();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(sentMessages(init).map((m) => m.id)).toEqual([
+      "u1",
+      call.id,
+      result.id,
+      "a2",
+      "u1",
+    ]);
+  });
+
   it("sends a malformed stored thread as-is instead of failing the run", async () => {
-    // A persisted or hand-built message can carry a hole in its toolCalls,
-    // which the repair cannot read. The repair is a best-effort fix-up; it
-    // must never cost the user a send the agent made before it existed. The
-    // single-route transport is used because it forwards the payload without
-    // schema validation, so before the repair this thread did go out.
-    vi.spyOn(console, "warn").mockImplementation(() => {});
+    // A persisted or hand-built message can carry a null entry in its
+    // toolCalls. The unfiltered pairing step skips entries it cannot read
+    // rather than throwing; it must never cost the user a send the agent made
+    // before it existed. The single-route transport is used because it
+    // forwards the payload without schema validation, so before the pairing
+    // step existed this thread did go out.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const malformed = createAssistantMessage({
       id: "a1",
       toolCalls: [null] as never,
@@ -856,16 +1305,17 @@ describe("ProxiedCopilotRuntimeAgent tool-call pairing without a filter", () => 
       "a1",
       "u2",
     ]);
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("warns once, naming the repair, and sends the input unchanged when the repair throws", async () => {
-    // Forced through the module export so this does not depend on which
-    // malformed shape the repair happens to choke on today.
-    vi.spyOn(messageFilterModule, "ɵrepairToolCallPairs").mockImplementation(
-      () => {
-        throw new Error("repair bug");
-      },
-    );
+    // Forced through the module export: no known input makes it throw.
+    vi.spyOn(
+      messageFilterModule,
+      "ɵkeepToolResultsWithCalls",
+    ).mockImplementation(() => {
+      throw new Error("repair bug");
+    });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { call, result, messages } = detached();
     const agent = agentWith(messages);
