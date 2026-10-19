@@ -205,8 +205,9 @@ const slotOf = (m: Message) => (m as unknown as { slot: number }).slot;
 // Null and array entries are transparent: like activity, never an anchor.
 const isEntry = (message: Message) =>
   message !== null && !Array.isArray(message);
-const runOf = (message: Message) =>
-  (message as { subagentRunId?: string }).subagentRunId ?? "";
+// An issuer position and a result's call id: one call slot group.
+const keyOf = (issuerSlot: number, result: Message) =>
+  JSON.stringify([issuerSlot, (result as { toolCallId?: string }).toolCallId]);
 
 describe("ɵkeepToolResultsWithCalls", () => {
   it("moves a detached result back behind its call (the snapshot-merge shape)", () => {
@@ -376,25 +377,39 @@ describe("ɵkeepToolResultsWithCalls", () => {
     ]);
   });
 
-  it("moves an extra result for an answered call forward to the next open call with its id", () => {
+  it("keeps an extra result for an answered call in place instead of moving it forward to a later open call", () => {
     const a = callsMsg("a", "c");
     const t1 = toolMsg("t1", "c");
     const t2 = toolMsg("t2", "c");
     const x = textMsg("x");
     const a2 = callsMsg("a2", "c");
+    const thread = [a, t1, t2, x, a2];
 
-    expect(ɵkeepToolResultsWithCalls([a, t1, t2, x, a2])).toEqual([
-      a,
-      t1,
-      x,
-      a2,
-      t2,
-    ]);
+    expect(ɵkeepToolResultsWithCalls(thread)).toBe(thread);
   });
 
-  it("moves results left without an earlier call forward in stored order", () => {
-    // t3 takes the one earlier call; t1 and t2 are left over and go forward,
-    // the earlier result to the earlier call.
+  it("never answers a later pending call with a stale result for an earlier answered call that reused its id", () => {
+    // t1 answers a1's call_0, so t1dup is an extra result for a call that
+    // already has one. a2 reuses call_0 and is still pending (a frontend
+    // tool, an interrupt, a human-in-the-loop call waiting on the user).
+    // Moving t1dup forward would answer a2 with a1's result.
+    const thread = [
+      userMsg("u1"),
+      callsMsg("a1", "call_0"),
+      toolMsg("t1", "call_0"),
+      textMsg("x"),
+      toolMsg("t1dup", "call_0"),
+      userMsg("u2"),
+      callsMsg("a2", "call_0"),
+    ];
+
+    expect(ɵkeepToolResultsWithCalls(thread)).toBe(thread);
+  });
+
+  it("leaves detached results that find no open earlier call in place, never moving them forward", () => {
+    // t3 takes the one earlier call. t1 and t2 had an earlier call for their
+    // id too, so they are extras, not early results, and stay put rather
+    // than answer a2 and a3.
     const a = callsMsg("a", "c");
     const x = textMsg("x");
     const t1 = toolMsg("t1", "c");
@@ -407,14 +422,29 @@ describe("ɵkeepToolResultsWithCalls", () => {
       a,
       t3,
       x,
-      a2,
       t1,
-      a3,
       t2,
+      a2,
+      a3,
     ]);
   });
 
-  it("pairs a result only with a call from the same subagent run", () => {
+  it("moves a drifted result behind its subagent call even when the result carries no subagentRunId", () => {
+    // Results CopilotKit creates itself (frontend tool results, interrupt
+    // responses) carry no subagentRunId, and a result's run may differ from
+    // its call's, so pairing is by call id alone.
+    const u = userMsg("u");
+    const s = withRun(callsMsg("s", "c"), "r1");
+    const x = textMsg("x");
+    const t = toolMsg("t", "c");
+
+    expect(ɵkeepToolResultsWithCalls([u, s, x, t])).toEqual([u, s, t, x]);
+  });
+
+  it("cannot tell apart a parent and a subagent call that reuse one id (known limitation)", () => {
+    // Pairing is by id alone. Both results drifted; newest back, t (the
+    // parent's) takes the newest open call (s, the subagent's) and ts takes
+    // a. Each call is answered once, but the two results are swapped.
     const u = userMsg("u");
     const a = callsMsg("a", "c");
     const s = withRun(callsMsg("s", "c"), "r1");
@@ -425,9 +455,9 @@ describe("ɵkeepToolResultsWithCalls", () => {
     expect(ɵkeepToolResultsWithCalls([u, a, s, x, ts, t])).toEqual([
       u,
       a,
-      t,
-      s,
       ts,
+      s,
+      t,
       x,
     ]);
   });
@@ -575,12 +605,13 @@ describe("ɵkeepToolResultsWithCalls", () => {
             history.push(inRun(toolMsg(`${id}.${burst}`, callId)));
           }
         } else if (kind < 0.86) {
-          // A result stored before the call it answers.
+          // A result stored before the call it answers. The two runs are
+          // drawn independently: pairing ignores them.
           const callId = pick(ID_POOL);
-          const result = inRun(toolMsg(`${id}.t`, callId));
-          const run = (result as { subagentRunId?: string }).subagentRunId;
-          const call = callsMsg(`${id}.a`, callId);
-          history.push(result, run === undefined ? call : withRun(call, run));
+          history.push(
+            inRun(toolMsg(`${id}.t`, callId)),
+            inRun(callsMsg(`${id}.a`, callId)),
+          );
         } else if (kind < 0.92) history.push(activityMsg(id));
         else if (kind < 0.96) history.push(null as unknown as Message);
         else history.push([] as unknown as Message);
@@ -671,19 +702,16 @@ describe("ɵkeepToolResultsWithCalls", () => {
       return { tagged, out, inAnchors, outAnchors, moved };
     };
 
-    /** How many calls `issuer` makes under the result's key. */
+    /**
+     * How many calls `issuer` makes for the result's call id. The subagent
+     * run of either side never matters.
+     */
     const callsFor = (issuer: Message, result: Message) =>
-      roleOf(issuer) === "assistant" && runOf(issuer) === runOf(result)
+      roleOf(issuer) === "assistant"
         ? toolCallIdsOf(issuer).filter(
             (id) => id === (result as { toolCallId?: string }).toolCallId,
           ).length
         : 0;
-    const keyOf = (issuerSlot: number, result: Message) =>
-      JSON.stringify([
-        issuerSlot,
-        runOf(result),
-        (result as { toolCallId?: string }).toolCallId,
-      ]);
 
     /**
      * Per issuer and key, how many results moved in behind it, and how many
@@ -737,7 +765,7 @@ describe("ɵkeepToolResultsWithCalls", () => {
       }
     });
 
-    it("lands every moved result directly behind an assistant call for its id and subagent run, with only tool or transparent entries between", () => {
+    it("lands every moved result directly behind an assistant call for its id, with only tool or transparent entries between", () => {
       for (const history of histories) {
         const { out, outAnchors, moved } = runTagged(history);
         out.forEach((m, index) => {
@@ -753,6 +781,25 @@ describe("ɵkeepToolResultsWithCalls", () => {
           expect(callsFor(out[anchor]!, m)).toBeGreaterThan(0);
         });
       }
+    });
+
+    it("moves a result forward only when no call for its id is stored before it", () => {
+      let movedForward = 0;
+      for (const history of histories) {
+        const { tagged, out, outAnchors, moved } = runTagged(history);
+        out.forEach((m, index) => {
+          if (!isEntry(m) || !moved.has(slotOf(m))) return;
+          const issuerSlot = slotOf(out[outAnchors[index]!]!);
+          if (issuerSlot < slotOf(m)) return;
+          movedForward++;
+          for (let before = 0; before < slotOf(m); before++) {
+            const earlier = tagged[before]!;
+            if (isEntry(earlier)) expect(callsFor(earlier, m)).toBe(0);
+          }
+        });
+      }
+      // The generator does produce results stored before their call.
+      expect(movedForward).toBeGreaterThan(0);
     });
 
     it("never answers one slot twice by moves", () => {
@@ -1006,7 +1053,8 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
       runtimeUrl: "https://runtime.example",
       agentId: "a",
       transport: "rest",
-      // The shape a `m.filter(x => x.content.length > 0)` mistake produces.
+      // The shape a `messages.map((m) => (keep(m) ? m : undefined))` mistake
+      // produces, where `filter` was meant.
       messageFilter: () => [undefined as never],
     });
     agent.setMessages(history());
@@ -1252,20 +1300,104 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
     });
 
     expect(repair).toHaveBeenCalledTimes(1);
-    // The filter worked, so its output goes out verbatim, edits included;
-    // only the repair on top of it is skipped.
+    // The filter worked, so its output goes out with its edits; only the
+    // filter repair on top of it is replaced by the move-only pass.
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const sent = sentMessages(init);
     expect(sent.map((m) => m.id)).toEqual(["u2"]);
     expect(sent[0]!.content).toBe("redacted");
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("tool-call repair failed"),
+      expect.stringContaining('tool-call repair failed for agent "a"'),
       expect.any(Error),
     );
     expect(warn).not.toHaveBeenCalledWith(
       expect.stringContaining("messageFilter failed"),
       expect.anything(),
+    );
+  });
+
+  it("still re-pairs a drifted result in the filter's output, keeping its edits, when the filter repair throws", async () => {
+    vi.spyOn(messageFilterModule, "ɵrepairToolCallPairs").mockImplementation(
+      () => {
+        throw new Error("repair bug");
+      },
+    );
+    const keep = vi.spyOn(messageFilterModule, "ɵkeepToolResultsWithCalls");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const agent = new ProxiedCopilotRuntimeAgent({
+      runtimeUrl: "https://runtime.example",
+      agentId: "a",
+      transport: "rest",
+      // Trims the first message and redacts the rest.
+      messageFilter: (messages) =>
+        messages
+          .slice(1)
+          .map((m) => ({ ...m, content: "redacted" }) as Message),
+    });
+    const call = createToolCallMessage("lookup");
+    const after = createAssistantMessage({ id: "after", content: "text" });
+    const result = createToolResultMessage(toolCallIdOf(call), "done");
+    agent.setMessages([createMessage({ id: "u1" }), call, after, result]);
+
+    await agent.runAgent();
+
+    expect(keep).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const sent = sentMessages(init);
+    expect(sent.map((m) => m.id)).toEqual([call.id, result.id, after.id]);
+    expect(sent.map((m) => m.content)).toEqual([
+      "redacted",
+      "redacted",
+      "redacted",
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('tool-call repair failed for agent "a"'),
+      expect.any(Error),
+    );
+  });
+
+  it("sends the filter's output as is when both the filter repair and the move-only fallback throw", async () => {
+    vi.spyOn(messageFilterModule, "ɵrepairToolCallPairs").mockImplementation(
+      () => {
+        throw new Error("repair bug");
+      },
+    );
+    vi.spyOn(
+      messageFilterModule,
+      "ɵkeepToolResultsWithCalls",
+    ).mockImplementation(() => {
+      throw new Error("move bug");
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const agent = new ProxiedCopilotRuntimeAgent({
+      runtimeUrl: "https://runtime.example",
+      agentId: "a",
+      transport: "rest",
+      messageFilter: (messages) =>
+        messages
+          .slice(1)
+          .map((m) => ({ ...m, content: "redacted" }) as Message),
+    });
+    const call = createToolCallMessage("lookup");
+    const after = createAssistantMessage({ id: "after", content: "text" });
+    const result = createToolResultMessage(toolCallIdOf(call), "done");
+    agent.setMessages([createMessage({ id: "u1" }), call, after, result]);
+
+    await expect(agent.runAgent()).resolves.toMatchObject({
+      newMessages: expect.any(Array),
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const sent = sentMessages(init);
+    expect(sent.map((m) => m.id)).toEqual([call.id, after.id, result.id]);
+    expect(sent.every((m) => m.content === "redacted")).toBe(true);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('tool-call repair failed for agent "a"'),
+      expect.any(Error),
+      expect.any(Error),
     );
   });
 
@@ -1762,7 +1894,7 @@ describe("ProxiedCopilotRuntimeAgent tool-call pairing without a filter", () => 
     ]);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("tool-call repair failed"),
+      expect.stringContaining('tool-call repair failed for agent "a"'),
       expect.any(Error),
     );
   });

@@ -307,12 +307,23 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
    *   loses them for good.
    * - **Filter**: `ɵrepairToolCallPairs(kept, full)` is the existing filter
    *   repair: it puts back the call or the results a filter trimmed from a
-   *   kept pair, and does not run the drifted-result move. Known
-   *   limitations: it matches by call id and message id, so a reused call id
-   *   pairs with the last stored call and result for it, and messages that
-   *   share an id are sent once; and it sends the stored copy of every
-   *   message it restores and of every tool result whose call is stored, so a
-   *   filter's edits to those do not survive it.
+   *   kept pair. It does not run `ɵkeepToolResultsWithCalls`, but it emits
+   *   every stored result for a call directly after the assistant message
+   *   that issued it, so a drifted result whose call id is not reused is
+   *   re-attached to its call as a side effect. Known limitations, left for a
+   *   follow-up: it maps each call id to the last stored call and the last
+   *   stored result for it, so when call ids are reused (`call_0` every
+   *   turn) it can drop results and reorder turns, answering an earlier call
+   *   with a later turn's result and pulling a later assistant turn in front
+   *   of the user message that preceded it; it deduplicates by message id,
+   *   so messages that share an id are sent once; and it re-sends the stored
+   *   original of every message it restores and of every tool result whose
+   *   call is stored, so a filter's edits to those messages are lost.
+   * - **Filter repair throws**: the filter's output goes through
+   *   `ɵkeepToolResultsWithCalls` instead, which only moves results and
+   *   never throws on malformed input, so the filter's trimming and
+   *   redaction are kept and drifted results are still re-paired. If that
+   *   throws as well, the filter's output is sent as is.
    *
    * **Called from the HTTP paths only, and that placement is the Intelligence
    * exemption.** An earlier revision applied the filter in
@@ -335,10 +346,11 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
    * cannot reach the messages the UI renders no matter what it does with the
    * array it is handed. The filter gets a *second* deep clone on top of that,
    * because `input.messages` is also the repair baseline and the untrimmed
-   * fallback: sharing the message objects let a filter that mutates a kept
-   * message's `toolCallId` corrupt the baseline, and an orphaned tool result
-   * then went out on the wire — a payload the provider rejects, which is
-   * exactly the failure this whole mechanism exists to prevent.
+   * fallback: sharing the message objects let a filter that rewrote the tool
+   * call id of an assistant message it dropped hide that issuer from the
+   * repair, and the kept tool result then went out orphaned — a payload the
+   * provider rejects, which is exactly the failure this whole mechanism
+   * exists to prevent.
    */
   #prepareOutboundMessages(input: RunAgentInput): RunAgentInput {
     const full = input.messages;
@@ -346,12 +358,15 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
 
     // The pairing step is a best-effort fix-up, so it is guarded on its own
     // and kept apart from the filter call: a bug here is reported as the
-    // repair failing, never as the app's filter failing. If it throws, the
-    // payload goes out as it would have without it — the input unchanged
-    // when nothing was filtered, the filter's own output (unrepaired) when a
-    // filter ran. Only that throw path sends the filter's output verbatim:
-    // a successful filter repair sends the stored copy of every message it
-    // restores and of every tool result whose call is stored (see above).
+    // repair failing, never as the app's filter failing. A successful filter
+    // repair changes more than pairing: it can add stored calls and results,
+    // reorder messages, drop messages that share an id or results under a
+    // reused call id, and replace a filter's edited copies with the stored
+    // originals (see above). If the repair throws, the payload goes out as
+    // it would have without it — the input unchanged when nothing was
+    // filtered, the filter's output with only drifted results moved when a
+    // filter ran.
+    const agentId = this.agentId ?? "";
     try {
       const messages =
         kept === undefined
@@ -359,19 +374,35 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
           : ɵrepairToolCallPairs(kept, full);
       return { ...input, messages };
     } catch (error) {
-      console.warn(
-        kept === undefined
-          ? "ProxiedCopilotRuntimeAgent: tool-call repair failed; sending the message history unrepaired instead."
-          : "ProxiedCopilotRuntimeAgent: tool-call repair failed; sending the filtered message history unrepaired instead.",
-        error,
-      );
-      return kept === undefined ? input : { ...input, messages: kept };
+      if (kept === undefined) {
+        console.warn(
+          `ProxiedCopilotRuntimeAgent: tool-call repair failed for agent "${agentId}"; sending the message history unrepaired instead.`,
+          error,
+        );
+        return input;
+      }
+      try {
+        const messages = ɵkeepToolResultsWithCalls(kept);
+        console.warn(
+          `ProxiedCopilotRuntimeAgent: tool-call repair failed for agent "${agentId}"; sending the filtered message history with only drifted tool results moved instead.`,
+          error,
+        );
+        return { ...input, messages };
+      } catch (moveError) {
+        console.warn(
+          `ProxiedCopilotRuntimeAgent: tool-call repair failed for agent "${agentId}"; sending the filtered message history unrepaired instead.`,
+          error,
+          moveError,
+        );
+        return { ...input, messages: kept };
+      }
     }
   }
 
   /**
-   * Run the configured filter. Returns `undefined` when there is no filter or
-   * the filter's output cannot be used, meaning "send the full thread".
+   * Run the configured filter. Returns `undefined` when there is no filter,
+   * copying the thread for it fails, or the filter's output cannot be used,
+   * meaning "send the full thread".
    *
    * A filter that throws, returns a non-array, or returns an array with an
    * entry that is not a message object (a hole or a nested array included)
