@@ -479,6 +479,35 @@ describe("useGenerativeUIRoot", () => {
       });
     });
 
+    it("drops an event while the agent runs or another event is on its way, and takes the next one once idle", async () => {
+      const { runtime, agent } = setup();
+      act(() =>
+        runtime.manager.ingest(agent.threadId, "default", buttonSurface("s1")),
+      );
+      const event = { name: "buy", ...origin, context: { sku: "a" } };
+
+      // A double click: the second event arrives before the run has started.
+      const first = runtime.forwardEvent(event, "default");
+      const repeat = await runtime.forwardEvent(event, "default");
+      expect(!repeat.ok && repeat.error.code).toBe("agent_busy");
+      await waitFor(() => expect(CapturingAgent.inputs).toHaveLength(1));
+      agent.emit(runStartedEvent());
+
+      // A click while the reply streams.
+      const midRun = await runtime.forwardEvent(event, "default");
+      expect(!midRun.ok && midRun.error.code).toBe("agent_busy");
+      agent.emit(runFinishedEvent());
+      await expect(first).resolves.toEqual({ ok: true, result: undefined });
+      expect(CapturingAgent.inputs).toHaveLength(1);
+
+      // Idle again: the next event is sent.
+      const next = runtime.forwardEvent(event, "default");
+      await waitFor(() => expect(CapturingAgent.inputs).toHaveLength(2));
+      agent.emit(runStartedEvent());
+      agent.emit(runFinishedEvent());
+      await expect(next).resolves.toEqual({ ok: true, result: undefined });
+    });
+
     it("reports event_forward_failed when the agent does not exist", async () => {
       vi.spyOn(console, "warn").mockImplementation(() => {});
       const onError = vi.fn();

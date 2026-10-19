@@ -15,7 +15,9 @@ export type GenerativeUIErrorCode =
   /** A function value or check could not be computed. */
   | "expression_error"
   /** A function the caller may not call: `openUrl` from the agent. */
-  | "invalid_function_call";
+  | "invalid_function_call"
+  /** An event arrived while the agent was running: it was not sent. */
+  | "agent_busy";
 
 export class GenerativeUIError extends Error {
   readonly code: GenerativeUIErrorCode;
