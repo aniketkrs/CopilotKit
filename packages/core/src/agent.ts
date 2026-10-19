@@ -4,6 +4,7 @@ import type {
   AgentSubscriber,
   BaseEvent,
   HttpAgentConfig,
+  Message,
   RunAgentInput,
   RunAgentParameters,
   RunAgentResult,
@@ -285,7 +286,17 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
   }
 
   /**
-   * Narrow the outbound payload with the configured message filter.
+   * Build the outbound payload: narrow it with the configured message filter,
+   * then put every tool result back directly after the call that issued it.
+   *
+   * The pair repair runs on every send, filter or not. The client store can
+   * hold a tool result detached from its call on its own: when a backend's
+   * `MESSAGES_SNAPSHOT` carries a tool message under a different id than the
+   * streamed `TOOL_CALL_RESULT` did, the `@ag-ui/client` merge drops the copy
+   * placed after its call and appends the snapshot's copy at the end. A
+   * backend that rebuilds its state from that payload (a LangGraph agent whose
+   * checkpoint is gone) discards every result it cannot pair, and the model
+   * loses them for good. On a well-formed thread the repair is a no-op.
    *
    * **Called from the HTTP paths only, and that placement is the Intelligence
    * exemption.** An earlier revision applied the filter in
@@ -313,9 +324,15 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
    * then went out on the wire — a payload the provider rejects, which is
    * exactly the failure this whole mechanism exists to prevent.
    */
-  #applyMessageFilter(input: RunAgentInput): RunAgentInput {
+  #prepareOutboundMessages(input: RunAgentInput): RunAgentInput {
+    const full = input.messages;
+    const send = (kept: Message[]): RunAgentInput => ({
+      ...input,
+      messages: ɵrepairToolCallPairs(kept, full),
+    });
+
     const filter = this._messageFilter;
-    if (!filter) return input;
+    if (!filter) return send(full);
 
     // A filter that throws, returns the wrong shape, or hands back entries the
     // repair cannot read falls back to the untrimmed thread rather than
@@ -323,22 +340,22 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
     // message down with it would be the worse outcome; the warning is what
     // surfaces the bug.
     try {
-      const kept = filter(structuredClone_(input.messages), {
+      const kept = filter(structuredClone_(full), {
         agentId: this.agentId ?? "",
       });
       if (!Array.isArray(kept)) {
         console.warn(
           "ProxiedCopilotRuntimeAgent: messageFilter returned a non-array value; sending the full message history instead.",
         );
-        return input;
+        return send(full);
       }
-      return { ...input, messages: ɵrepairToolCallPairs(kept, input.messages) };
+      return send(kept);
     } catch (error) {
       console.warn(
         "ProxiedCopilotRuntimeAgent: messageFilter failed; sending the full message history instead.",
         error,
       );
-      return input;
+      return send(full);
     }
   }
 
@@ -616,7 +633,7 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
   }
 
   #connectViaHttp(unfiltered: RunAgentInput): Observable<BaseEvent> {
-    const input = this.#applyMessageFilter(unfiltered);
+    const input = this.#prepareOutboundMessages(unfiltered);
     this.activeRun = undefined;
     const routedId = this.routedAgentId();
     let httpEvents: ReturnType<typeof runHttpRequest>;
@@ -671,7 +688,7 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
   }
 
   #runViaHttp(unfiltered: RunAgentInput): Observable<BaseEvent> {
-    const input = this.#applyMessageFilter(unfiltered);
+    const input = this.#prepareOutboundMessages(unfiltered);
     const activeRun = { threadId: input.threadId, runId: input.runId };
     // Hold this run's identity for as long as its stream lives. The identity
     // check keeps a late-finalizing stream from releasing a newer run.

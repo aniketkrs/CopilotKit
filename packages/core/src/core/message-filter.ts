@@ -41,7 +41,16 @@ function resultCallIdOf(message: Message): string | undefined {
 }
 
 /**
- * Repair the tool-call pairs a filter broke.
+ * Repair the tool-call pairs a filter broke, or that the client store holds
+ * out of order.
+ *
+ * It runs on every send, filter or not, with `kept === full` when there is no
+ * filter. The store can detach a tool result from its call on its own: when a
+ * backend's `MESSAGES_SNAPSHOT` carries a tool message under a different id
+ * than the streamed `TOOL_CALL_RESULT`, the `@ag-ui/client` merge drops the
+ * copy placed after its call and appends the snapshot's copy at the end. Each
+ * assistant turn here pulls its results in directly behind it, so that order
+ * goes out repaired, and a well-formed thread goes out unchanged.
  *
  * Every provider rejects a half pair. A tool result whose call is gone reads as
  * a reply to nothing, and an assistant tool call whose result is gone leaves

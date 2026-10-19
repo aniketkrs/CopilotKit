@@ -566,6 +566,155 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
   });
 });
 
+describe("ProxiedCopilotRuntimeAgent tool-call pairing without a filter", () => {
+  // The client store can hold a tool result detached from its call: when the
+  // streamed TOOL_CALL_RESULT and the backend's MESSAGES_SNAPSHOT carry the
+  // tool message under different ids, the snapshot merge drops the streamed
+  // copy (placed after its call) and appends the snapshot's copy at the tail.
+  // A backend rebuilding its state from that payload drops the result it
+  // cannot pair, so the pairs are restored on every send, filter or not.
+  const originalFetch = global.fetch;
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn().mockResolvedValue(createSseResponse());
+    global.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    global.fetch = originalFetch;
+  });
+
+  const agentWith = (messages: Message[]) => {
+    const agent = new ProxiedCopilotRuntimeAgent({
+      runtimeUrl: "https://runtime.example",
+      agentId: "a",
+      transport: "rest",
+    });
+    agent.setMessages(messages);
+    return agent;
+  };
+
+  /** A store whose tool result was pushed past the reply that followed it. */
+  const detached = () => {
+    const call = createToolCallMessage("lookup");
+    const result = createToolResultMessage(toolCallIdOf(call), "done");
+    const reply = createAssistantMessage({ id: "a2" });
+    return {
+      call,
+      result,
+      messages: [createMessage({ id: "u1" }), call, reply, result],
+    };
+  };
+
+  it("puts a detached tool result back directly after its call", async () => {
+    const { call, result, messages } = detached();
+    const agent = agentWith(messages);
+
+    await agent.runAgent();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(sentMessages(init).map((m) => m.id)).toEqual([
+      "u1",
+      call.id,
+      result.id,
+      "a2",
+    ]);
+  });
+
+  it("re-pairs on the connect request too", async () => {
+    const { call, result, messages } = detached();
+    const agent = agentWith(messages);
+
+    await agent.connectAgent().catch(() => undefined);
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain("/connect");
+    expect(sentMessages(init).map((m) => m.id)).toEqual([
+      "u1",
+      call.id,
+      result.id,
+      "a2",
+    ]);
+  });
+
+  it("re-pairs every result of a parallel call", async () => {
+    const call = createMultipleToolCallsMessage([
+      { name: "lookupA" },
+      { name: "lookupB" },
+    ]);
+    const [callA, callB] = toolCallIdsOf(call);
+    const resultA = createToolResultMessage(callA!, "a");
+    const resultB = createToolResultMessage(callB!, "b");
+    const agent = agentWith([
+      createMessage({ id: "u1" }),
+      call,
+      resultB,
+      createAssistantMessage({ id: "a2" }),
+      resultA,
+    ]);
+
+    await agent.runAgent();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(sentMessages(init).map((m) => m.id)).toEqual([
+      "u1",
+      call.id,
+      resultA.id,
+      resultB.id,
+      "a2",
+    ]);
+  });
+
+  it("sends a well-formed thread exactly as stored", async () => {
+    const call = createToolCallMessage("lookup");
+    const result = createToolResultMessage(toolCallIdOf(call), "done");
+    const messages = [
+      createMessage({ id: "u1" }),
+      call,
+      result,
+      createAssistantMessage({ id: "a2" }),
+      createMessage({ id: "u2" }),
+    ];
+    const agent = agentWith(messages);
+
+    await agent.runAgent();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(sentMessages(init)).toEqual(messages);
+  });
+
+  it("leaves an open call alone", async () => {
+    const call = createToolCallMessage("approve");
+    const agent = agentWith([createMessage({ id: "u1" }), call]);
+
+    await agent.runAgent();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(sentMessages(init).map((m) => m.id)).toEqual(["u1", call.id]);
+  });
+
+  it("still re-pairs the full thread a broken filter falls back to", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { call, result, messages } = detached();
+    const agent = agentWith(messages);
+    agent.messageFilter = () => {
+      throw new Error("boom");
+    };
+
+    await agent.runAgent();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(sentMessages(init).map((m) => m.id)).toEqual([
+      "u1",
+      call.id,
+      result.id,
+      "a2",
+    ]);
+  });
+});
+
 describe("CopilotKitCore messageFilter reaches runtime-discovered agents", () => {
   const originalFetch = global.fetch;
   const originalWindow = (global as { window?: unknown }).window;
