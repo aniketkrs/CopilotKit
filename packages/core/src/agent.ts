@@ -326,37 +326,61 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
    */
   #prepareOutboundMessages(input: RunAgentInput): RunAgentInput {
     const full = input.messages;
-    const send = (kept: Message[]): RunAgentInput => ({
-      ...input,
-      messages: ɵrepairToolCallPairs(kept, full),
-    });
+    const kept = this.#applyMessageFilter(full);
 
-    const filter = this._messageFilter;
-    if (!filter) return send(full);
-
-    // A filter that throws, returns the wrong shape, or hands back entries the
-    // repair cannot read falls back to the untrimmed thread rather than
-    // failing the run. Trimming is an optimization, and taking the user's
-    // message down with it would be the worse outcome; the warning is what
-    // surfaces the bug.
+    // The repair is a best-effort fix-up, so it is guarded on its own: if it
+    // throws (a stored message the repair cannot read, say `toolCalls:
+    // [null]`), the run goes out exactly as it did before the repair existed —
+    // the input unchanged, untrimmed and unrepaired. It is kept apart from the
+    // filter call so a repair bug is never reported as the app's filter
+    // failing.
     try {
-      const kept = filter(structuredClone_(full), {
-        agentId: this.agentId ?? "",
-      });
-      if (!Array.isArray(kept)) {
-        console.warn(
-          "ProxiedCopilotRuntimeAgent: messageFilter returned a non-array value; sending the full message history instead.",
-        );
-        return send(full);
-      }
-      return send(kept);
+      return { ...input, messages: ɵrepairToolCallPairs(kept, full) };
+    } catch (error) {
+      console.warn(
+        "ProxiedCopilotRuntimeAgent: tool-call repair failed; sending the message history unfiltered and unrepaired instead.",
+        error,
+      );
+      return input;
+    }
+  }
+
+  /**
+   * Run the configured filter, or return `full` when there is none.
+   *
+   * A filter that throws, returns a non-array, or returns an entry that is
+   * not a message object falls back to the untrimmed thread (which the caller
+   * then repairs) rather than failing the run. Trimming is an optimization,
+   * and taking the user's message down with it would be the worse outcome;
+   * the warning is what surfaces the bug.
+   */
+  #applyMessageFilter(full: Message[]): Message[] {
+    const filter = this._messageFilter;
+    if (!filter) return full;
+
+    let kept: unknown;
+    try {
+      kept = filter(structuredClone_(full), { agentId: this.agentId ?? "" });
     } catch (error) {
       console.warn(
         "ProxiedCopilotRuntimeAgent: messageFilter failed; sending the full message history instead.",
         error,
       );
-      return send(full);
+      return full;
     }
+    if (!Array.isArray(kept)) {
+      console.warn(
+        "ProxiedCopilotRuntimeAgent: messageFilter returned a non-array value; sending the full message history instead.",
+      );
+      return full;
+    }
+    if (!kept.every((entry) => typeof entry === "object" && entry !== null)) {
+      console.warn(
+        "ProxiedCopilotRuntimeAgent: messageFilter returned an entry that is not a message; sending the full message history instead.",
+      );
+      return full;
+    }
+    return kept as Message[];
   }
 
   override requestInit(input: RunAgentInput): RequestInit {

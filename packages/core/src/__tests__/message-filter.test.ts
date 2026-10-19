@@ -3,6 +3,7 @@ import type { Message, RunAgentInput } from "@ag-ui/client";
 import { EMPTY } from "rxjs";
 import { ProxiedCopilotRuntimeAgent } from "../agent";
 import { CopilotKitCore } from "../core";
+import * as messageFilterModule from "../core/message-filter";
 import { ɵrepairToolCallPairs } from "../core/message-filter";
 import {
   createSuggestionsConfig,
@@ -519,7 +520,7 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
     },
   );
 
-  it("drops a non-message entry the filter smuggled in, without failing the run", async () => {
+  it("falls back to the full thread when the filter smuggles in a non-message entry", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const agent = new ProxiedCopilotRuntimeAgent({
       runtimeUrl: "https://runtime.example",
@@ -536,7 +537,13 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(sentMessages(init).map((m) => m.id)).toEqual(["u1", "a1", "u2"]);
-    expect(warn).toHaveBeenCalled();
+    // The filter produced the bad entry, so the filter is what gets blamed.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "messageFilter returned an entry that is not a message",
+      ),
+    );
   });
 
   it("leaves Intelligence runs untrimmed, because that runtime is the store of record", async () => {
@@ -692,6 +699,69 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
       expect.stringContaining("messageFilter failed"),
       expect.any(Error),
     );
+  });
+
+  it("blames the tool-call repair, not a filter that worked, when the repair throws", async () => {
+    // Forced through the module export: the repair failing is what is under
+    // test, independent of which malformed input happens to trip it.
+    vi.spyOn(messageFilterModule, "ɵrepairToolCallPairs").mockImplementation(
+      () => {
+        throw new Error("repair bug");
+      },
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const agent = new ProxiedCopilotRuntimeAgent({
+      runtimeUrl: "https://runtime.example",
+      agentId: "a",
+      transport: "rest",
+      messageFilter: (messages) => messages.slice(-1),
+    });
+    agent.setMessages(history());
+
+    await expect(agent.runAgent()).resolves.toMatchObject({
+      newMessages: expect.any(Array),
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(sentMessages(init).map((m) => m.id)).toEqual(["u1", "a1", "u2"]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("tool-call repair failed"),
+      expect.any(Error),
+    );
+    expect(warn).not.toHaveBeenCalledWith(
+      expect.stringContaining("messageFilter failed"),
+      expect.anything(),
+    );
+  });
+
+  it("still sends the thread when both the filter and the repair throw", async () => {
+    vi.spyOn(messageFilterModule, "ɵrepairToolCallPairs").mockImplementation(
+      () => {
+        throw new Error("repair bug");
+      },
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const agent = new ProxiedCopilotRuntimeAgent({
+      runtimeUrl: "https://runtime.example",
+      agentId: "a",
+      transport: "rest",
+      messageFilter: () => {
+        throw new Error("filter bug");
+      },
+    });
+    agent.setMessages(history());
+
+    await expect(agent.runAgent()).resolves.toMatchObject({
+      newMessages: expect.any(Array),
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(sentMessages(init).map((m) => m.id)).toEqual(["u1", "a1", "u2"]);
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      expect.stringContaining("messageFilter failed"),
+      expect.stringContaining("tool-call repair failed"),
+    ]);
   });
 
   it("applies a filter assigned after construction", async () => {
@@ -888,6 +958,110 @@ describe("ProxiedCopilotRuntimeAgent tool-call pairing without a filter", () => 
       result.id,
       "a2",
     ]);
+  });
+
+  it("still re-pairs the full thread a non-array filter result falls back to", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { call, result, messages } = detached();
+    const agent = agentWith(messages);
+    agent.messageFilter = (() => "not an array") as never;
+
+    await agent.runAgent();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(sentMessages(init).map((m) => m.id)).toEqual([
+      "u1",
+      call.id,
+      result.id,
+      "a2",
+    ]);
+  });
+
+  it("re-pairs on the single-route connect request too", async () => {
+    const { call, result, messages } = detached();
+    const agent = new ProxiedCopilotRuntimeAgent({
+      runtimeUrl: "https://runtime.example",
+      agentId: "a",
+      transport: "single",
+    });
+    agent.setMessages(messages);
+
+    await agent.connectAgent().catch(() => undefined);
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const envelope = JSON.parse(init.body as string);
+    expect(envelope.method).toBe("agent/connect");
+    expect(envelope.body.messages.map((m: Message) => m.id)).toEqual([
+      "u1",
+      call.id,
+      result.id,
+      "a2",
+    ]);
+  });
+
+  it("sends a malformed stored thread as-is instead of failing the run", async () => {
+    // A persisted or hand-built message can carry a hole in its toolCalls,
+    // which the repair cannot read. The repair is a best-effort fix-up; it
+    // must never cost the user a send the agent made before it existed. The
+    // single-route transport is used because it forwards the payload without
+    // schema validation, so before the repair this thread did go out.
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const malformed = createAssistantMessage({
+      id: "a1",
+      toolCalls: [null] as never,
+    });
+    const agent = new ProxiedCopilotRuntimeAgent({
+      runtimeUrl: "https://runtime.example",
+      agentId: "a",
+      transport: "single",
+    });
+    agent.setMessages([
+      createMessage({ id: "u1" }),
+      malformed,
+      createMessage({ id: "u2" }),
+    ]);
+
+    await expect(agent.runAgent()).resolves.toMatchObject({
+      newMessages: expect.any(Array),
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const envelope = JSON.parse(init.body as string);
+    expect(envelope.body.messages.map((m: Message) => m.id)).toEqual([
+      "u1",
+      "a1",
+      "u2",
+    ]);
+  });
+
+  it("warns once, naming the repair, and sends the input unchanged when the repair throws", async () => {
+    // Forced through the module export so this does not depend on which
+    // malformed shape the repair happens to choke on today.
+    vi.spyOn(messageFilterModule, "ɵrepairToolCallPairs").mockImplementation(
+      () => {
+        throw new Error("repair bug");
+      },
+    );
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { call, result, messages } = detached();
+    const agent = agentWith(messages);
+
+    await expect(agent.runAgent()).resolves.toMatchObject({
+      newMessages: expect.any(Array),
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(sentMessages(init).map((m) => m.id)).toEqual([
+      "u1",
+      call.id,
+      "a2",
+      result.id,
+    ]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("tool-call repair failed"),
+      expect.any(Error),
+    );
   });
 });
 
