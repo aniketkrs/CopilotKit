@@ -1,3 +1,4 @@
+import { A2UI_CHILD_LIST_REF } from "./generative-ui/child-refs";
 import type { GenerativeUIManifest } from "./generative-ui/types";
 /**
  * Default A2UI generation and design guideline prompts.
@@ -168,11 +169,20 @@ export function generativeUIGuideFeatures(
   manifest: Pick<GenerativeUIManifest, "components" | "functions">,
 ): GenerativeUIGuideFeatures {
   const components = Object.values(manifest.components);
+  const hasChildList = (schema: unknown): boolean => {
+    if (Array.isArray(schema)) return schema.some(hasChildList);
+    if (typeof schema !== "object" || schema === null) return false;
+    const node = schema as Record<string, unknown>;
+    if (node.$ref === A2UI_CHILD_LIST_REF) return true;
+    return Object.values(node).some(hasChildList);
+  };
   return {
     functions: Object.keys(manifest.functions).length > 0,
     events: components.some((c) => Object.keys(c.events ?? {}).length > 0),
-    templates: components.some((c) =>
-      Object.values(c.slots ?? {}).includes("multiple"),
+    templates: components.some(
+      (c) =>
+        Object.values(c.slots ?? {}).includes("multiple") ||
+        hasChildList(c.props),
     ),
   };
 }
@@ -247,11 +257,11 @@ export function buildGenerativeUIMarkdownGuidelines(
     templates
       ? 'Never put {"@call": ...} or an expression in a data prop. Compute derived values (totals, prices) yourself and write them as literals or into the data model. The only exception is {"@call":"@index"} in a template.'
       : 'Never put {"@call": ...} or an expression in a data prop. Compute derived values (totals, prices) yourself and write them as literals or into the data model.',
-    'Give a slot component ids: "child":"card" for a single slot, "children":["a","b"] for a multiple slot.',
+    'A prop typed componentId takes the id of another component, and a childList takes ids ["a","b"]: "child":"card", "children":["a","b"], "tabs":[{"title":"Specs","child":"specs"}].',
   );
   if (templates) {
     rules.push(
-      'To repeat a component for each item of a list, give a multiple slot a template: "children":{"componentId":"row","path":"/items"}.',
+      'To repeat a component for each item of a list, give a childList a template: "children":{"componentId":"row","path":"/items"}.',
       'Inside a template, paths are relative to the item ("name", not "/name").',
       'Inside a template, {"@call":"@index"} gives the position of the item, from 0. To count from 1, write {"@call":"@index","args":{"offset":1}}.',
     );

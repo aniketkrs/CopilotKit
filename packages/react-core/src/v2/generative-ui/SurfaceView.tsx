@@ -15,8 +15,10 @@ import {
   isActionBinding,
   isIndexCall,
   isPathBinding,
+  mapAtChildRef,
 } from "@copilotkit/shared";
 import type {
+  ChildRef,
   GenerativeUIActionBinding,
   GenerativeUITemplateChildren,
 } from "@copilotkit/shared";
@@ -712,6 +714,67 @@ function useSlotProps(
   }, [surface, definition, properties, componentId, basePath, ancestors]);
 }
 
+/**
+ * The parsed data props with every typed child reference (`child()`,
+ * `childList()`, at any depth) replaced by the rendered component. Without
+ * references, the parsed props come back as they are.
+ */
+function useChildRefProps(
+  surface: ManagedSurface,
+  refs: readonly ChildRef[],
+  props: Record<string, unknown> | undefined,
+  componentId: string,
+  basePath: string | undefined,
+  ancestors: readonly string[],
+) {
+  return useMemo(() => {
+    if (props === undefined || refs.length === 0) return props;
+    const childAncestors = [...ancestors, scopedId(componentId, basePath)];
+    const render = (kind: ChildRef["kind"], value: unknown): unknown => {
+      if (kind === "single") {
+        return typeof value === "string" ? (
+          <NodeView
+            surface={surface}
+            componentId={value}
+            basePath={basePath}
+            ancestors={childAncestors}
+          />
+        ) : undefined;
+      }
+      if (isTemplateChildren(value)) {
+        return (
+          <TemplateChildren
+            surface={surface}
+            template={value}
+            basePath={basePath}
+            ancestors={childAncestors}
+          />
+        );
+      }
+      if (!Array.isArray(value)) return undefined;
+      const ids = [
+        ...new Set(value.filter((id): id is string => typeof id === "string")),
+      ];
+      return ids.map((id) => (
+        <NodeView
+          key={id}
+          surface={surface}
+          componentId={id}
+          basePath={basePath}
+          ancestors={childAncestors}
+        />
+      ));
+    };
+    let result: unknown = props;
+    for (const ref of refs) {
+      result = mapAtChildRef(result, ref.path, (found) =>
+        render(ref.kind, found),
+      );
+    }
+    return result as Record<string, unknown>;
+  }, [surface, refs, props, componentId, basePath, ancestors]);
+}
+
 function ResolvedNode({
   surface,
   componentId,
@@ -761,6 +824,14 @@ function ResolvedNode({
     basePath,
     ancestors,
   );
+  const childRefProps = useChildRefProps(
+    surface,
+    definition.childRefs,
+    dataProps.ok ? dataProps.props : undefined,
+    componentId,
+    basePath,
+    ancestors,
+  );
   const nodeContext = useMemo(
     () => ({
       surfaceKey: surface.key,
@@ -794,7 +865,7 @@ function ResolvedNode({
   return (
     <GenerativeUINodeContext.Provider value={nodeContext}>
       <Component
-        {...dataProps.props}
+        {...childRefProps}
         {...eventProps}
         {...slotProps}
         {...setters}

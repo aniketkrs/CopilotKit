@@ -95,7 +95,8 @@ describe("GENERATIVE_UI_MARKDOWN_GUIDELINES", () => {
   });
 
   it("describes slots with child ids and with a template of relative paths", () => {
-    expect(guide).toContain('"children":["a","b"] for a multiple slot');
+    expect(guide).toContain('"tabs":[{"title":"Specs","child":"specs"}]');
+    expect(guide).toContain('"children":["a","b"]');
     expect(guide).toContain('"children":{"componentId":"row","path":"/items"}');
     expect(guide).toContain(
       'paths are relative to the item ("name", not "/name")',

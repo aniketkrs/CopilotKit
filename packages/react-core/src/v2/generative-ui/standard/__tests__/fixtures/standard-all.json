@@ -28,7 +28,9 @@
       "padding": 2,
       "border": true,
       "radius": "md",
-      "children": ["row"]
+      "children": [
+        "row"
+      ]
     },
     {
       "id": "row",
@@ -37,7 +39,11 @@
       "align": "center",
       "justify": "spaceBetween",
       "wrap": "wrap",
-      "children": ["spacer-l", "grid", "spacer-r"]
+      "children": [
+        "spacer-l",
+        "grid",
+        "spacer-r"
+      ]
     },
     {
       "id": "spacer-l",
@@ -53,13 +59,18 @@
       "component": "Grid",
       "columns": 2,
       "gap": 2,
-      "children": ["gi1", "gi2"]
+      "children": [
+        "gi1",
+        "gi2"
+      ]
     },
     {
       "id": "gi1",
       "component": "GridItem",
       "span": 1,
-      "children": ["gi1-t"]
+      "children": [
+        "gi1-t"
+      ]
     },
     {
       "id": "gi1-t",
@@ -69,7 +80,9 @@
     {
       "id": "gi2",
       "component": "GridItem",
-      "children": ["gi2-t"]
+      "children": [
+        "gi2-t"
+      ]
     },
     {
       "id": "gi2-t",
@@ -80,13 +93,17 @@
       "id": "flow",
       "component": "Flow",
       "columns": 2,
-      "children": ["fi"]
+      "children": [
+        "fi"
+      ]
     },
     {
       "id": "fi",
       "component": "FlowItem",
       "aspectRatio": "2 / 1",
-      "children": ["fi-t"]
+      "children": [
+        "fi-t"
+      ]
     },
     {
       "id": "fi-t",
@@ -98,12 +115,18 @@
       "component": "Carousel",
       "label": "Slides",
       "visibleItems": 2,
-      "children": ["ci1", "ci2", "cmi"]
+      "children": [
+        "ci1",
+        "ci2",
+        "cmi"
+      ]
     },
     {
       "id": "ci1",
       "component": "CarouselItem",
-      "children": ["ci1-t"]
+      "children": [
+        "ci1-t"
+      ]
     },
     {
       "id": "ci1-t",
@@ -113,7 +136,9 @@
     {
       "id": "ci2",
       "component": "CarouselItem",
-      "children": ["ci2-t"]
+      "children": [
+        "ci2-t"
+      ]
     },
     {
       "id": "ci2-t",
@@ -126,7 +151,9 @@
       "url": "https://example.com/slide.png",
       "description": "Slide three",
       "size": "sm",
-      "children": ["cmi-t"]
+      "children": [
+        "cmi-t"
+      ]
     },
     {
       "id": "cmi-t",
@@ -143,13 +170,14 @@
       "component": "Tabs",
       "tabs": [
         {
-          "title": "Plan"
+          "title": "Plan",
+          "child": "tab-plan"
         },
         {
-          "title": "Usage"
+          "title": "Usage",
+          "child": "tab-usage"
         }
-      ],
-      "children": ["tab-plan", "tab-usage"]
+      ]
     },
     {
       "id": "tab-plan",
@@ -184,7 +212,9 @@
       "id": "text",
       "component": "Text",
       "text": "Body with **bold**, *italic* and `code` [link](https://copilotkit.ai)",
-      "children": ["badge"]
+      "children": [
+        "badge"
+      ]
     },
     {
       "id": "badge",
@@ -378,7 +408,11 @@
         "@path": "/form/size"
       },
       "label": "Size",
-      "options": ["S", "M", "L"]
+      "options": [
+        "S",
+        "M",
+        "L"
+      ]
     },
     {
       "id": "slider",
@@ -398,7 +432,10 @@
         "@path": "/form/period"
       },
       "label": "Billing period",
-      "options": ["Monthly", "Yearly"]
+      "options": [
+        "Monthly",
+        "Yearly"
+      ]
     },
     {
       "id": "cp",
@@ -436,7 +473,9 @@
           "name": "pressed"
         }
       },
-      "children": ["press-t"]
+      "children": [
+        "press-t"
+      ]
     },
     {
       "id": "press-t",
@@ -455,7 +494,10 @@
       "component": "Card",
       "variant": "soft",
       "gap": 2,
-      "children": ["s-inputs-title", "form"]
+      "children": [
+        "s-inputs-title",
+        "form"
+      ]
     },
     {
       "id": "s-inputs-title",
@@ -486,7 +528,9 @@
       "id": "celeb",
       "component": "Celebration",
       "trigger": "done",
-      "children": ["celeb-t"]
+      "children": [
+        "celeb-t"
+      ]
     },
     {
       "id": "celeb-t",
@@ -503,12 +547,17 @@
     {
       "id": "pop",
       "component": "Popover",
-      "children": ["pop-trig", "pop-content"]
+      "children": [
+        "pop-trig",
+        "pop-content"
+      ]
     },
     {
       "id": "pop-trig",
       "component": "PopoverTrigger",
-      "children": ["pop-trig-t"]
+      "children": [
+        "pop-trig-t"
+      ]
     },
     {
       "id": "pop-trig-t",
@@ -519,7 +568,9 @@
       "id": "pop-content",
       "component": "PopoverContent",
       "side": "bottom",
-      "children": ["pop-c-t"]
+      "children": [
+        "pop-c-t"
+      ]
     },
     {
       "id": "pop-c-t",
@@ -576,25 +627,39 @@
         }
       ],
       "rows": [
-        ["Price", "$29/seat"],
-        ["Seats", "Unlimited"]
+        [
+          "Price",
+          "$29/seat"
+        ],
+        [
+          "Seats",
+          "Unlimited"
+        ]
       ]
     },
     {
       "id": "table2",
       "component": "Table",
-      "children": ["tsec-h", "tsec-b"]
+      "children": [
+        "tsec-h",
+        "tsec-b"
+      ]
     },
     {
       "id": "tsec-h",
       "component": "TableSection",
       "header": true,
-      "children": ["th-row"]
+      "children": [
+        "th-row"
+      ]
     },
     {
       "id": "th-row",
       "component": "TableRow",
-      "children": ["th-c1", "th-c2"]
+      "children": [
+        "th-c1",
+        "th-c2"
+      ]
     },
     {
       "id": "th-c1",
@@ -618,7 +683,10 @@
     {
       "id": "tb-row",
       "component": "TableRow",
-      "children": ["tb-c1", "tb-c2"]
+      "children": [
+        "tb-c1",
+        "tb-c2"
+      ]
     },
     {
       "id": "tb-c1",
@@ -631,7 +699,9 @@
       "id": "tb-c2",
       "component": "TableCell",
       "align": "end",
-      "children": ["tb-c2-t"]
+      "children": [
+        "tb-c2-t"
+      ]
     },
     {
       "id": "tb-c2-t",
@@ -681,7 +751,9 @@
       "chartType": "bar",
       "title": "Monthly cost",
       "xKey": "month",
-      "series": ["cost"],
+      "series": [
+        "cost"
+      ],
       "data": [
         {
           "month": "Jan",
@@ -854,7 +926,10 @@
     {
       "id": "cite-row",
       "component": "Row",
-      "children": ["cite-t", "cite"]
+      "children": [
+        "cite-t",
+        "cite"
+      ]
     },
     {
       "id": "cite-t",
@@ -956,7 +1031,9 @@
       "seats": 8,
       "period": "Monthly",
       "date": "2026-10-14",
-      "tags": ["Code"]
+      "tags": [
+        "Code"
+      ]
     },
     "people": [
       {

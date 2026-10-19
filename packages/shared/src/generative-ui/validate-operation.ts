@@ -1,5 +1,11 @@
+import { collectChildRefs } from "./child-refs";
+import type { ChildRef } from "./child-refs";
 import { A2UI_VERSION } from "./types";
-import type { GenerativeUIActionBinding, GenerativeUIManifest } from "./types";
+import type {
+  GenerativeUIActionBinding,
+  GenerativeUIJSONSchema,
+  GenerativeUIManifest,
+} from "./types";
 
 export type OperationValidation = { ok: true } | { ok: false; reason: string };
 
@@ -355,6 +361,10 @@ function nodeProblem(
       return `${key}: function calls are only allowed in event props; a data prop can use only {"@call":"@index"}`;
     }
   }
+  for (const ref of childRefsOf(entry.props)) {
+    const reason = childRefProblem(node, ref, id);
+    if (reason) return reason;
+  }
   const requiredNames = Array.isArray(required) ? required : [];
   for (const name of requiredNames) {
     if (typeof name === "string" && !(name in node)) {
@@ -511,4 +521,57 @@ function containsFunctionCall(
   return Object.values(value).some((item) =>
     containsFunctionCall(item, options),
   );
+}
+
+const childRefCache = new WeakMap<GenerativeUIJSONSchema, ChildRef[]>();
+
+/** The component references of a props schema, computed once per schema. */
+function childRefsOf(props: GenerativeUIJSONSchema) {
+  let refs = childRefCache.get(props);
+  if (!refs) {
+    refs = collectChildRefs(props);
+    childRefCache.set(props, refs);
+  }
+  return refs;
+}
+
+/**
+ * Checks the component ids at one reference of a node: a typed `child()`
+ * or `childList()` prop, at any depth. A missing key is fine; the props
+ * schema reports a required one.
+ */
+function childRefProblem(
+  node: Record<string, unknown>,
+  ref: ChildRef,
+  ownId: string,
+): string | undefined {
+  const label = ref.path.filter((step) => step !== "*").join(".");
+  const visit = (
+    value: unknown,
+    steps: readonly string[],
+  ): string | undefined => {
+    if (steps.length === 0) {
+      const reason = slotProblem(value, ref.kind, ownId);
+      return reason ? `${label}: ${reason}` : undefined;
+    }
+    const [head, ...rest] = steps;
+    if (head === "*") {
+      if (!Array.isArray(value)) return undefined;
+      for (const item of value) {
+        const reason = visit(item, rest);
+        if (reason) return reason;
+      }
+      return undefined;
+    }
+    if (!isRecord(value) || !hasOwn(value, head)) return undefined;
+    // A bound or computed value is known only at render.
+    if (
+      isPathBinding(value[head]) ||
+      (isRecord(value[head]) && "@call" in value[head])
+    ) {
+      return undefined;
+    }
+    return visit(value[head], rest);
+  };
+  return visit(node, ref.path);
 }

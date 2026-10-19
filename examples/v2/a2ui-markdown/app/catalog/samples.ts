@@ -282,13 +282,13 @@ export const SAMPLES: CatalogSample[] = [
       {
         id: "root",
         component: "Tabs",
-        tabs: [{ title: "Overview" }, { title: "Specs" }, { title: "Reviews" }],
-        children: ["t1", "t2", "t3"],
+        tabs: [
+          { title: "Overview", child: "t1" },
+          { title: "Specs", child: "t2" },
+          { title: "Reviews", child: "t3" },
+        ],
       },
-      txt(
-        "t1",
-        "The overview panel. The nth child is the panel of the nth tab.",
-      ),
+      txt("t1", "The overview panel. Each tab names its panel by id."),
       {
         id: "t2",
         component: "List",

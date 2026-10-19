@@ -7,6 +7,7 @@ import {
   validateOperation,
 } from "../validate-operation";
 import type { ValidateOperationOptions } from "../validate-operation";
+import { A2UI_COMPONENT_ID_REF } from "../child-refs";
 import type { GenerativeUIManifest } from "../types";
 
 const manifest: Pick<GenerativeUIManifest, "catalogId" | "components"> = {
@@ -27,6 +28,24 @@ const manifest: Pick<GenerativeUIManifest, "catalogId" | "components"> = {
     Frame: {
       props: { type: "object", properties: {} },
       slots: { child: "single" },
+    },
+    // A typed child reference inside a list, as A2UI 1.0 Tabs has it.
+    Tabs: {
+      props: {
+        type: "object",
+        properties: {
+          tabs: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                title: { type: "string" },
+                child: { $ref: A2UI_COMPONENT_ID_REF },
+              },
+            },
+          },
+        },
+      },
     },
   },
 };
@@ -364,6 +383,32 @@ describe("validateOperation: data props", () => {
     ]) {
       expect(reasonOf(card({ name }))).toBe(reason);
     }
+  });
+});
+
+describe("validateOperation: typed child references", () => {
+  const tabs = (tabs: unknown) => update({ id: "t1", component: "Tabs", tabs });
+
+  it("accepts component ids at a nested reference", () => {
+    expect(
+      reasonOf(
+        tabs([
+          { title: "A", child: "a" },
+          { title: "B", child: "b" },
+        ]),
+      ),
+    ).toBe("ok");
+    // A bound list is checked at render.
+    expect(reasonOf(tabs({ "@path": "/tabs" }))).toBe("ok");
+  });
+
+  it("rejects a value that is not an id, and the component itself", () => {
+    expect(reasonOf(tabs([{ title: "A", child: 1 }]))).toBe(
+      'component "t1": tabs.child: must reference component ids (strings)',
+    );
+    expect(reasonOf(tabs([{ title: "A", child: "t1" }]))).toBe(
+      'component "t1": tabs.child: a component cannot be its own child',
+    );
   });
 });
 

@@ -4,6 +4,7 @@ import {
   generativeUIGuideFeatures,
   GENERATIVE_UI_MARKDOWN_GUIDELINES_DESCRIPTION,
   GENERATIVE_UI_MARKDOWN_SCHEMA_CONTEXT_DESCRIPTION,
+  childRefKind,
 } from "@copilotkit/shared";
 import type {
   GenerativeUIJSONSchema,
@@ -28,9 +29,17 @@ function schemaList(value: unknown) {
   return Array.isArray(value) ? value.filter(isRecord) : [];
 }
 
-/** Puts a union in parentheses, so that `[]` applies to all of it. */
+/**
+ * Puts a top-level union in parentheses, so that `[]` applies to all of
+ * it. A union inside braces needs none.
+ */
 function asArrayItem(type: string) {
-  return type.includes(" | ") ? `(${type})[]` : `${type}[]`;
+  let outside = type;
+  for (let inner = outside.replace(/\{[^{}]*\}/g, ""); inner !== outside; ) {
+    outside = inner;
+    inner = outside.replace(/\{[^{}]*\}/g, "");
+  }
+  return outside.includes(" | ") ? `(${type})[]` : `${type}[]`;
 }
 
 /**
@@ -38,6 +47,11 @@ function asArrayItem(type: string) {
  * `{ label: string; size?: "sm" | "md" }`.
  */
 function compactType(schema: GenerativeUIJSONSchema, depth: number): string {
+  const ref = childRefKind(schema);
+  if (ref === "single") return "componentId";
+  if (ref === "multiple") {
+    return "componentId[] | { componentId: string; path: string }";
+  }
   if ("const" in schema) return JSON.stringify(schema.const);
   if (Array.isArray(schema.enum)) {
     return schema.enum.map((value) => JSON.stringify(value)).join(" | ");

@@ -188,10 +188,27 @@ the user step through all of their images). `Video` plays a video file in a
 native player; given a YouTube link, it shows a poster until the user presses
 play and then loads the privacy-enhanced embed.
 
-`Tabs` takes `tabs: [{ "title" }]` and the same number of children, in
-order: the nth child is the panel of the nth tab. (The A2UI 1.0 catalog puts
-a `child` id inside each tab entry; the engine resolves child ids only in
-top-level slots, so the panels are children here.)
+`Tabs` takes `tabs: [{ "title", "child" }]`, with the id of the panel
+component in each entry, as in the A2UI 1.0 catalog.
+
+### Your own components with child references
+
+Mark a prop that holds another component with `child()` or `childList()`
+from `@copilotkit/react-core/v2/generative-ui`, anywhere in the props
+schema: `tabs: z.array(z.object({ title: z.string(), child: child() }))`.
+The engine renders the referenced components and your component receives
+them as React nodes in place of the ids. `slots` still works for the plain
+top-level case.
+
+`Map` loads `maplibre-gl` on demand; install it in your app if your agent
+draws maps. The basemap is OpenFreeMap's keyless Positron style; pass your own
+style URL as `theme: { mapStyle: "https://…/style.json" }`. A `Markdown`
+component inside a surface renders with Streamdown, like the chat prose
+around it.
+
+The example app renders every component with sample data at
+`http://localhost:3011/catalog`, next to the description and props the model
+sees.
 
 `Map` loads `maplibre-gl` on demand; install it in your app if your agent
 draws maps. The basemap is OpenFreeMap's keyless Positron style; pass your own
