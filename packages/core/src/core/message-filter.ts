@@ -175,11 +175,11 @@ export function ɵrepairToolCallPairs(
  *   across the calls, and a later turn's lone result goes to the later call
  *   rather than to an earlier one that was abandoned.
  * - Pass 3, forward, per id: the early results, left to right, each take the
- *   first still-open slot issued after them, if any. This repairs a result
- *   whose call was re-issued after it (a snapshot that re-ids the assistant
- *   message but keeps the result's id). In-place results took their slots in
- *   pass 1, so this never steals one. A result left without a slot stays
- *   put. Only early results move forward: an extra result for a call that is
+ *   next slot issued after them. This repairs a result whose call was
+ *   re-issued after it (a snapshot that re-ids the assistant message but
+ *   keeps the result's id). If that next slot is already answered, the result
+ *   stays: it never skips past an answered call onto a later one. A result
+ *   left without a slot stays put. Only early results move forward: an extra result for a call that is
  *   already answered never does, so it cannot answer a later call with a
  *   reused id that is still pending (a frontend tool, an interrupt, a
  *   human-in-the-loop `call_0` waiting on the user).
@@ -274,9 +274,16 @@ export function ɵkeepToolResultsWithCalls(messages: Message[]): Message[] {
   for (const [callId, results] of early) {
     const forId = slots.get(callId);
     if (!forId) continue;
+    // Each early result may take only the next slot after it. Slots taken
+    // here advance the cursor; a slot already answered holds it, so the
+    // result stays rather than skipping onto a later, still-pending call.
+    let s = 0;
     for (const index of results) {
-      const first = forId.find((slot) => slot.open && slot.issuer > index);
-      if (first) take(first, index);
+      while (s < forId.length && forId[s]!.issuer < index) s++;
+      if (s === forId.length) break;
+      if (!forId[s]!.open) continue;
+      take(forId[s]!, index);
+      s++;
     }
   }
 

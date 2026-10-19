@@ -232,6 +232,18 @@ describe("ɵkeepToolResultsWithCalls", () => {
     expect(ɵkeepToolResultsWithCalls(thread)).toBe(thread);
   });
 
+  it("never moves an early result past an answered call onto a later pending one", () => {
+    const thread = [
+      toolMsg("t0", "c"),
+      callsMsg("a1", "c"),
+      toolMsg("t1", "c"),
+      userMsg("u2"),
+      callsMsg("a2", "c"),
+    ];
+
+    expect(ɵkeepToolResultsWithCalls(thread)).toBe(thread);
+  });
+
   it("leaves results in place when call ids are reused across turns", () => {
     const thread = [
       userMsg("u1"),
@@ -361,19 +373,31 @@ describe("ɵkeepToolResultsWithCalls", () => {
     expect(ɵkeepToolResultsWithCalls(thread)).toBe(thread);
   });
 
-  it("moves a result forward to the first later call still unanswered", () => {
-    const t0 = toolMsg("t0", "c");
-    const a1 = callsMsg("a1", "c");
-    const t1 = toolMsg("t1", "c");
-    const a2 = callsMsg("a2", "c");
-    const a3 = callsMsg("a3", "c");
+  it("keeps an early result in place when the next call for its id is already answered", () => {
+    const thread = [
+      toolMsg("t0", "c"),
+      callsMsg("a1", "c"),
+      toolMsg("t1", "c"),
+      callsMsg("a2", "c"),
+      callsMsg("a3", "c"),
+    ];
 
-    expect(ɵkeepToolResultsWithCalls([t0, a1, t1, a2, a3])).toEqual([
+    // Skipping the answered a1 would hand t0 to a2, a call that may still be
+    // pending, so t0 stays.
+    expect(ɵkeepToolResultsWithCalls(thread)).toBe(thread);
+  });
+
+  it("moves several early results forward onto consecutive calls", () => {
+    const t0 = toolMsg("t0", "c");
+    const t1 = toolMsg("t1", "c");
+    const a1 = callsMsg("a1", "c");
+    const a2 = callsMsg("a2", "c");
+
+    expect(ɵkeepToolResultsWithCalls([t0, t1, a1, a2])).toEqual([
       a1,
-      t1,
-      a2,
       t0,
-      a3,
+      a2,
+      t1,
     ]);
   });
 
