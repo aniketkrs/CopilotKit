@@ -162,6 +162,182 @@ describe("ɵrepairToolCallPairs", () => {
   });
 });
 
+describe("ɵrepairToolCallPairs on an unfiltered thread", () => {
+  // With no filter the repair runs with `kept === full`, on whatever the store
+  // holds. It may re-place or restore messages, never lose or duplicate one,
+  // and a well-formed thread has to go out exactly as stored.
+  const asMessage = (fields: Record<string, unknown>) =>
+    fields as unknown as Message;
+  const call = (id: string, ...callIds: string[]) =>
+    asMessage({
+      id,
+      role: "assistant",
+      content: "",
+      toolCalls: callIds.map((callId) => ({
+        id: callId,
+        type: "function",
+        function: { name: "lookup", arguments: "{}" },
+      })),
+    });
+  const result = (id: string, toolCallId: string) =>
+    asMessage({ id, role: "tool", content: "done", toolCallId });
+  const user = (id?: string) =>
+    asMessage(
+      id === undefined
+        ? { role: "user", content: "hi" }
+        : { id, role: "user", content: "hi" },
+    );
+
+  /** Runs the unfiltered repair and checks every message survived exactly once. */
+  const repairUnfiltered = (thread: Message[]) => {
+    const repaired = ɵrepairToolCallPairs(thread, thread);
+    expect(repaired).toHaveLength(thread.length);
+    expect(new Set(repaired)).toEqual(new Set(thread));
+    return repaired;
+  };
+
+  it("keeps every message that shares an id with an earlier one", () => {
+    const thread = [
+      user("dup"),
+      call("a1", "call-1"),
+      result("dup", "call-1"),
+      asMessage({ id: "dup", role: "assistant", content: "same id again" }),
+    ];
+
+    expect(repairUnfiltered(thread)).toEqual(thread);
+  });
+
+  it("keeps every message that has no id", () => {
+    const thread = [
+      user(),
+      user(),
+      asMessage({ role: "assistant", content: "x" }),
+    ];
+
+    const repaired = repairUnfiltered(thread);
+
+    repaired.forEach((message, index) => expect(message).toBe(thread[index]));
+  });
+
+  it("pairs a tool-call id reused across turns positionally", () => {
+    // Some backends number calls per turn, so `call_0` recurs every turn.
+    const a1 = call("a1", "call_0");
+    const t1 = result("t1", "call_0");
+    const a2 = call("a2", "call_0");
+    const t2 = result("t2", "call_0");
+    const thread = [user("u1"), a1, t1, user("u2"), a2, t2];
+
+    expect(repairUnfiltered(thread)).toEqual(thread);
+  });
+
+  it("re-pairs a detached result with the nearest preceding issuer of its id", () => {
+    const a1 = call("a1", "call_0");
+    const t1 = result("t1", "call_0");
+    const a2 = call("a2", "call_0");
+    const reply = asMessage({ id: "r2", role: "assistant", content: "ok" });
+    const t2 = result("t2", "call_0");
+
+    expect(repairUnfiltered([a1, t1, a2, reply, t2]).map((m) => m.id)).toEqual([
+      "a1",
+      "t1",
+      "a2",
+      "t2",
+      "r2",
+    ]);
+  });
+
+  it("keeps both results when one call was answered twice", () => {
+    const a1 = call("a1", "call-1");
+    const first = result("t1", "call-1");
+    const second = result("t2", "call-1");
+
+    expect(repairUnfiltered([a1, first, second, user("u2")])).toEqual([
+      a1,
+      first,
+      second,
+      user("u2"),
+    ]);
+    expect(
+      repairUnfiltered([a1, first, user("u2"), second]).map((m) => m.id),
+    ).toEqual(["a1", "t1", "t2", "u2"]);
+  });
+
+  it("does not move an unanswered assistant that reuses an answered call's id", () => {
+    const thread = [
+      call("a1", "call-1"),
+      user("u1"),
+      call("a2", "call-1"),
+      result("t1", "call-1"),
+    ];
+
+    expect(repairUnfiltered(thread)).toEqual(thread);
+  });
+
+  it("leaves a result stored before its issuer where it is", () => {
+    // Moving the result would pull a1 ahead of the reasoning that belongs to
+    // it, and LangGraph converters drop reasoning that is not directly before
+    // its assistant turn.
+    const thread = [
+      user("u1"),
+      result("t1", "call-1"),
+      asMessage({ id: "r1", role: "reasoning", content: "thinking" }),
+      call("a1", "call-1"),
+      user("u2"),
+    ];
+
+    expect(repairUnfiltered(thread)).toEqual(thread);
+  });
+
+  it("repairs a call whose id is the empty string", () => {
+    const a1 = call("a1", "");
+    const t1 = result("t1", "");
+
+    expect(
+      repairUnfiltered([user("u1"), a1, user("u2"), t1]).map((m) => m.id),
+    ).toEqual(["u1", "a1", "t1", "u2"]);
+  });
+
+  it("passes malformed tool calls and empty entries through without throwing", () => {
+    const thread = [
+      asMessage({ id: "a1", role: "assistant", toolCalls: "not-an-array" }),
+      asMessage({ id: "a2", role: "assistant", toolCalls: [null, { id: 7 }] }),
+      asMessage({ id: "t1", role: "tool", content: "x", toolCallId: 7 }),
+      null as unknown as Message,
+      user("u1"),
+    ];
+
+    expect(ɵrepairToolCallPairs(thread, thread).map((m) => m.id)).toEqual([
+      "a1",
+      "a2",
+      "t1",
+      "u1",
+    ]);
+  });
+
+  it("emits the filter's copy when it restores around a kept message", () => {
+    // The filter is handed a deep clone, so its kept messages are not the
+    // objects in `full`; they are matched back by id.
+    const a1 = call("a1", "call-1");
+    const t1 = result("t1", "call-1");
+    const full = [user("u1"), a1, t1];
+    const keptCopy = structuredClone(t1);
+
+    const repaired = ɵrepairToolCallPairs([keptCopy], full);
+
+    expect(repaired).toHaveLength(2);
+    expect(repaired[0]).toBe(a1);
+    expect(repaired[1]).toBe(keptCopy);
+  });
+
+  it("rejects a non-message entry the filter added, so the caller can fall back", () => {
+    const full = [user("u1")];
+
+    expect(() =>
+      ɵrepairToolCallPairs([undefined as unknown as Message], full),
+    ).toThrow(TypeError);
+  });
+});
+
 describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
   const originalFetch = global.fetch;
   let fetchMock: ReturnType<typeof vi.fn>;
