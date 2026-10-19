@@ -191,6 +191,19 @@ play and then loads the privacy-enhanced embed.
 `Tabs` takes `tabs: [{ "title", "child" }]`, with the id of the panel
 component in each entry, as in the A2UI 1.0 catalog.
 
+### Dynamic values
+
+Any prop can be a literal, a data-model binding (`{ "@path": "/total" }`)
+or a function value (`{ "@call": "formatCurrency", "args": { "value":
+{ "@path": "/total" }, "currency": "EUR" } }`), at any depth of the prop. A
+function value recomputes when the data it reads changes. The basic
+functions of A2UI 1.0 are built in: `formatString` (with `${/path}` and
+`${fn(arg: value)}` interpolation), `formatNumber`, `formatCurrency`,
+`formatDate`, `pluralize`, `and`, `or`, `not`, the validators `required`,
+`regex`, `length`, `numeric` and `email`, `@index` in a template, and
+`openUrl`, which runs only from an event binding. The agent can call them
+with `callRendererFunction` too, except `openUrl`.
+
 ### Your own components with child references
 
 Mark a prop that holds another component with `child()` or `childList()`

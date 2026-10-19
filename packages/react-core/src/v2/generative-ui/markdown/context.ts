@@ -4,6 +4,7 @@ import {
   generativeUIGuideFeatures,
   GENERATIVE_UI_MARKDOWN_GUIDELINES_DESCRIPTION,
   GENERATIVE_UI_MARKDOWN_SCHEMA_CONTEXT_DESCRIPTION,
+  A2UI_BASIC_FUNCTIONS,
   childRefKind,
 } from "@copilotkit/shared";
 import type {
@@ -49,9 +50,8 @@ function asArrayItem(type: string) {
 function compactType(schema: GenerativeUIJSONSchema, depth: number): string {
   const ref = childRefKind(schema);
   if (ref === "single") return "componentId";
-  if (ref === "multiple") {
+  if (ref === "multiple")
     return "componentId[] | { componentId: string; path: string }";
-  }
   if ("const" in schema) return JSON.stringify(schema.const);
   if (Array.isArray(schema.enum)) {
     return schema.enum.map((value) => JSON.stringify(value)).join(" | ");
@@ -237,15 +237,21 @@ export function buildCompactGenerativeUISchema(
       );
     }
   }
-  const functions = Object.fromEntries(
-    Object.entries(manifest.functions).map(([name, fn]) => [
+  // The basic functions of A2UI come first; an app function of the same
+  // name replaces one.
+  const functions = Object.fromEntries([
+    ...Object.entries(A2UI_BASIC_FUNCTIONS).map(([name, fn]) => [
+      name,
+      { description: fn.description, parameters: fn.parameters },
+    ]),
+    ...Object.entries(manifest.functions).map(([name, fn]) => [
       name,
       {
         ...(fn.description ? { description: fn.description } : {}),
         parameters: compactType(fn.parameters, 0),
       },
     ]),
-  );
+  ]);
   return {
     catalogId: manifest.catalogId,
     targets: manifest.targets,

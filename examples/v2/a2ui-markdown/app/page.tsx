@@ -51,6 +51,11 @@ const SUGGESTIONS: Suggestion[] = [
       "Build me an interactive team plan estimator: a slider for number of seats (1-50) at $29 per seat showing the monthly price, a checkbox for annual billing with 20% discount, a small comparison table of Starter/Team/Enterprise, a bar chart of the cumulative cost over 12 months, and a form with name and email plus a Request quote button.",
   },
   {
+    title: "Table booking",
+    message:
+      "Make a table booking card: a field for my name, a date picker, a slider for the number of guests (1-8), and a sentence under them that reads like 'Table for 3 guests on Friday, Nov 7 for Ada' and updates live as I change the inputs, without asking you again. Add a Book button that sends the booking to you.",
+  },
+  {
     title: "Compare laptops",
     message:
       "Compare three laptops for video editing in a table (price, CPU, RAM, screen, battery). Mark the best value with a badge and add a button under each one that tells you which I picked.",

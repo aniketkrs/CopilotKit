@@ -502,7 +502,12 @@
     {
       "id": "s-inputs-title",
       "component": "Caption",
-      "text": "Inputs"
+      "text": {
+        "@call": "formatString",
+        "args": {
+          "value": "Inputs (${/form/seats} seats, ${formatCurrency(value: /form/total, currency: 'EUR')})"
+        }
+      }
     },
     {
       "id": "loading",
@@ -1033,7 +1038,8 @@
       "date": "2026-10-14",
       "tags": [
         "Code"
-      ]
+      ],
+      "total": 1599
     },
     "people": [
       {

@@ -972,6 +972,62 @@ export const SAMPLES: CatalogSample[] = [
       },
     ],
   },
+  // --------------------------------------------------------- Dynamic values
+  {
+    group: "Dynamic values",
+    title: "Function values: formatString, formatCurrency, pluralize",
+    covers: ["Slider", "Text", "List"],
+    components: [
+      { id: "root", component: "Column", gap: 3, children: ["s", "t", "l"] },
+      {
+        id: "s",
+        component: "Slider",
+        label: "Seats",
+        min: 1,
+        max: 20,
+        value: { "@path": "/seats" },
+      },
+      {
+        id: "t",
+        component: "Text",
+        text: {
+          "@call": "formatString",
+          args: {
+            value:
+              "${/seats} ${pluralize(value: /seats, one: 'seat', other: 'seats')} cost ${formatCurrency(value: /total, currency: 'EUR')} per month",
+          },
+        },
+      },
+      {
+        id: "l",
+        component: "List",
+        items: [
+          {
+            label: "Per seat",
+            value: {
+              "@call": "formatCurrency",
+              args: { value: 12, currency: "EUR", decimals: 0 },
+            },
+          },
+          {
+            label: "Renews",
+            value: {
+              "@call": "formatDate",
+              args: { value: "2026-11-01", format: "EEEE, MMM d, yyyy" },
+            },
+          },
+          {
+            label: "Seats (bound)",
+            value: {
+              "@call": "formatNumber",
+              args: { value: { "@path": "/seats" } },
+            },
+          },
+        ],
+      },
+    ],
+    data: { seats: 4, total: 48 },
+  },
   // ----------------------------------------------------------------- Media
   {
     group: "Media",

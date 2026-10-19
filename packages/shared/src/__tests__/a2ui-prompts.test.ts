@@ -45,6 +45,7 @@ describe("GENERATIVE_UI_MARKDOWN_GUIDELINES", () => {
     expect(guide.indexOf('"createSurface"')).toBeLessThan(
       guide.indexOf('"updateComponents"'),
     );
+    expect(guide).toContain('Keep "dataModel" flat');
   });
 
   it("keeps components flat, which live models got wrong", () => {
@@ -84,13 +85,15 @@ describe("GENERATIVE_UI_MARKDOWN_GUIDELINES", () => {
     );
   });
 
-  it("keeps function calls and expressions out of data props, except @index in a template", () => {
+  it("describes function values and the formatString grammar", () => {
     expect(guide).toContain(
-      'Never put {"@call": ...} or an expression in a data prop.',
+      'A prop can also be a function value that updates with the data: {"@call":"formatCurrency"',
     );
     expect(guide).toContain(
-      'The only exception is {"@call":"@index"} in a template.',
+      'Use only the functions under "functions" in the schema.',
     );
+    expect(guide).toContain("formatString interpolates ${...}");
+    expect(guide).toContain("There are no operators in ${...}");
     expect(guide).toContain('{"@call":"@index","args":{"offset":1}}');
   });
 
@@ -194,10 +197,11 @@ describe("buildGenerativeUIMarkdownGuidelines", () => {
     expect(small.length).toBeLessThan(GENERATIVE_UI_MARKDOWN_GUIDELINES.length);
   });
 
-  it("keeps events but drops the functionCall binding when no function is mounted", () => {
+  it("keeps events and openUrl, but no app functions, when none is mounted", () => {
     const text = buildGenerativeUIMarkdownGuidelines({ ...none, events: true });
     expect(text).toContain("userMessage");
-    expect(text).not.toContain("functionCall");
+    expect(text).toContain('"@call":"openUrl"');
+    expect(text).not.toContain("an app function from the schema");
     expect(text).not.toContain("callRendererFunction");
   });
 

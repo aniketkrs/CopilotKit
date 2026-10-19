@@ -200,12 +200,16 @@ const MARKDOWN_BASE_RULES = [
   {"version":"v1.0","createSurface":{"surfaceId":"plan-picker","dataModel":{ ...initial data... },"components":[{"id":"root","component":"<Name>","children":["seats","pick"]}]}}
   {"version":"v1.0","updateComponents":{"surfaceId":"plan-picker","components":[ ...the children... ]}}
   \`\`\``,
+  'Keep "dataModel" flat: top-level keys such as "seats" or "form", never one wrapper object around everything. Check that every { and [ you open in a line is closed.',
   'Every surface renders from the component with id "root". Make every other component reachable from "root" through slots.',
   "Use unique ids. Do not make cycles. A component cannot be its own child.",
   'Write a component as one flat object: {"id":"title","component":"<Name>","text":"Hello"}.',
   'Put the component name in "component" (never "type"). Put props next to it, never inside a "props" object.',
   'Use only the components, props, events, and slots in the schema. A component with "includesCommonProps" also takes every prop in "commonProps".',
   'Give a prop a literal value, or bind it to the data model with {"@path":"/x"}. Never write {"path":"/x"} as a binding.',
+  'A prop can also be a function value that updates with the data: {"@call":"formatCurrency","args":{"value":{"@path":"/total"},"currency":"EUR"}}. Use only the functions under "functions" in the schema. Write a literal when the value never changes.',
+  'formatString interpolates ${...}: {"@call":"formatString","args":{"value":"${/qty} × ${formatCurrency(value: /price, currency: \'EUR\')}"}}. Inside ${...}, a path has no quotes, a string has single quotes, and a function takes named args.',
+  "There are no operators in ${...} or in args: no arithmetic, no comparisons, no conditions. A derived number (a total, a converted amount) is computed by you and written as a literal or into the data model; it cannot follow the user's input without a round trip.",
   'Bind a writable prop to let the user edit it: "value":{"@path":"/form/email"}. The user\'s input goes to that path.',
   'To change data, write updateDataModel with a "path" and a "value": {"version":"v1.0","updateDataModel":{"surfaceId":"plan-picker","path":"/seats","value":12}}. Always give "value".',
   'Set "value":null to delete the key at "path".',
@@ -236,27 +240,16 @@ export function buildGenerativeUIMarkdownGuidelines(
   const rules = [...MARKDOWN_BASE_RULES];
   if (events) {
     rules.push(
+      'Give an event prop an object: {"event":{"name":"<name>","userMessage":"<text>","context":{...}}} or {"functionCall":{"@call":"<function>","args":{...}}}. Never a flat {"event":"<name>"}.',
       functions
-        ? 'Give an event prop an object: {"event":{"name":"<name>","userMessage":"<text>","context":{...}}} or {"functionCall":{"@call":"<function>","args":{...}}}. Never a flat {"event":"<name>"}.'
-        : 'Give an event prop an object: {"event":{"name":"<name>","userMessage":"<text>","context":{...}}}. Never a flat {"event":"<name>"}.',
-    );
-    if (functions) {
-      rules.push(
-        'Use {"functionCall": ...} to run an app function in the browser when the user clicks. Use only functions from the schema. You are not told about the call.',
-      );
-    }
-    rules.push(
+        ? 'Use {"functionCall": ...} to run a function in the browser when the user clicks: an app function from the schema, or openUrl: {"functionCall":{"@call":"openUrl","args":{"url":"https://example.com"}}}. You are not told about the call.'
+        : 'Use {"functionCall": ...} to open a URL when the user clicks: {"functionCall":{"@call":"openUrl","args":{"url":"https://example.com"}}}. You are not told about the call.',
       'Use {"event": ...} to send the interaction back to you as a user message. Put the text of that message in "userMessage": {"event":{"name":"choose","userMessage":"Show me the Team plan"}}.',
       'To send input values with an event, bind them in the context: "context":{"email":{"@path":"/form/email"}}.',
-      functions
-        ? "A button or other event prop without an event or functionCall does nothing."
-        : "A button or other event prop without an event does nothing.",
+      "A button or other event prop without an event or functionCall does nothing.",
     );
   }
   rules.push(
-    templates
-      ? 'Never put {"@call": ...} or an expression in a data prop. Compute derived values (totals, prices) yourself and write them as literals or into the data model. The only exception is {"@call":"@index"} in a template.'
-      : 'Never put {"@call": ...} or an expression in a data prop. Compute derived values (totals, prices) yourself and write them as literals or into the data model.',
     'A prop typed componentId takes the id of another component, and a childList takes ids ["a","b"]: "child":"card", "children":["a","b"], "tabs":[{"title":"Specs","child":"specs"}].',
   );
   if (templates) {

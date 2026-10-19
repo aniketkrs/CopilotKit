@@ -304,9 +304,10 @@ describe("markdown transport", () => {
           description: TARGET_DESCRIPTION,
         },
       ],
-      functions: {
+      functions: expect.objectContaining({
         addToCart: { parameters: "{ sku: string }" },
-      },
+        formatCurrency: expect.any(Object),
+      }),
       components: {
         Button: { props: { label: "string" } },
         Column: expect.any(Object),
