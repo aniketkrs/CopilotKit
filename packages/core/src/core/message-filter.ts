@@ -147,15 +147,24 @@ export function ɵrepairToolCallPairs(
  *
  * - Everything is by list position. The same object or id appearing twice is
  *   two independent slots. Nothing is dropped, deduplicated, or added, and
- *   only tool-role messages ever change position.
+ *   only tool-role messages ever change position. Duplicated entries
+ *   (including an assistant call the merge duplicated) are never dropped or
+ *   deduplicated either, so a duplicated call can be left unanswered.
  * - The anchor is the last message so far that is neither `tool` nor
- *   `activity`. Each tool call an assistant issues opens a slot, queued per
- *   call id.
- * - A result whose call id has an open slot on the anchor answers it (the
- *   earliest such) and stays put. Otherwise it answers the oldest open slot
- *   for its id and moves behind that issuer, after the tool and activity
- *   messages already following it, in stored order. A result with no open
- *   slot (its call is later, absent, or already answered) stays put.
+ *   `activity`. Each tool call an assistant issues opens a slot for its call
+ *   id.
+ * - A result answers the nearest earlier unanswered call with its id (the
+ *   newest open slot). If that slot was issued at the anchor, the result is
+ *   already in place and stays put. Otherwise it moves behind that issuer,
+ *   after the tool and activity messages already following it, in stored
+ *   order. A result with no open slot (its call is later, absent, or already
+ *   answered) stays put.
+ * - Nearest, not oldest, because providers reuse ids like `call_0` every
+ *   turn: an earlier call that was never answered must not pull a later
+ *   turn's result back across user turns.
+ * - Any other message between a call and its result separates them, so the
+ *   result moves before it: reasoning stored between the two ends up after
+ *   the result. Activity messages do not separate a result from its call.
  * - Malformed entries (non-object messages, non-array `toolCalls`, call
  *   entries without a string `id`) are ignored rather than thrown on.
  *
@@ -184,30 +193,31 @@ export function ɵkeepToolResultsWithCalls(messages: Message[]): Message[] {
         if (typeof call !== "object" || call === null) continue;
         const callId = (call as { id?: unknown }).id;
         if (typeof callId !== "string") continue;
-        const queue = openSlots.get(callId) ?? [];
-        queue.push({ issuer: index, answered: false });
-        openSlots.set(callId, queue);
+        const slots = openSlots.get(callId) ?? [];
+        slots.push({ issuer: index, answered: false });
+        openSlots.set(callId, slots);
       }
       continue;
     }
 
     const callId = (message as { toolCallId?: unknown }).toolCallId;
     if (typeof callId !== "string") continue;
-    const queue = openSlots.get(callId);
-    if (!queue) continue;
+    const slots = openSlots.get(callId);
+    if (!slots) continue;
 
-    const inPlace = queue.find((s) => !s.answered && s.issuer === anchor);
-    if (inPlace) {
-      inPlace.answered = true;
-      continue;
+    let nearest: { issuer: number; answered: boolean } | undefined;
+    for (let slot = slots.length - 1; slot >= 0 && !nearest; slot--) {
+      if (!slots[slot]!.answered) nearest = slots[slot];
     }
-    const oldest = queue.find((s) => !s.answered);
-    if (!oldest) continue;
-    oldest.answered = true;
+    if (!nearest) continue;
+    nearest.answered = true;
+    // A slot issued at the anchor is the newest one there can be, so the
+    // result is already where it belongs.
+    if (nearest.issuer === anchor) continue;
     moved.add(index);
-    const behind = movedBehind.get(oldest.issuer) ?? [];
+    const behind = movedBehind.get(nearest.issuer) ?? [];
     behind.push(index);
-    movedBehind.set(oldest.issuer, behind);
+    movedBehind.set(nearest.issuer, behind);
   }
 
   if (moved.size === 0) return messages;

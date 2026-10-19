@@ -239,19 +239,46 @@ describe("ɵkeepToolResultsWithCalls", () => {
     expect(ɵkeepToolResultsWithCalls(thread)).toBe(thread);
   });
 
-  it("pairs several detached results for one reused id oldest call first", () => {
+  it("pairs several detached results for one reused id nearest call first", () => {
     const a1 = callsMsg("A1", "c");
     const a2 = callsMsg("A2", "c");
     const x = textMsg("X");
     const t1 = toolMsg("T1", "c");
     const t2 = toolMsg("T2", "c");
 
+    // T1 answers the nearest open call (A2), T2 the next one back (A1). The
+    // results are indistinguishable by id, so either assignment answers every
+    // call exactly once and is equally valid for a provider; nearest-first is
+    // the one that keeps a later turn's result in its own turn when ids are
+    // reused (see the next test).
     expect(ɵkeepToolResultsWithCalls([a1, a2, x, t1, t2])).toEqual([
       a1,
-      t1,
-      a2,
       t2,
+      a2,
+      t1,
       x,
+    ]);
+  });
+
+  it("never pulls a later turn's result back to an earlier unanswered call with a reused id", () => {
+    const u1 = userMsg("u1");
+    const a1 = callsMsg("a1", "call_0");
+    const x = textMsg("x");
+    const u2 = userMsg("u2");
+    const a3 = callsMsg("a3", "call_0");
+    const y = textMsg("y");
+    const t3 = toolMsg("t3", "call_0");
+
+    // a1 was never answered; t3 belongs to a3, its own turn's call, and a1
+    // stays unanswered rather than claiming a result across two user turns.
+    expect(ɵkeepToolResultsWithCalls([u1, a1, x, u2, a3, y, t3])).toEqual([
+      u1,
+      a1,
+      x,
+      u2,
+      a3,
+      t3,
+      y,
     ]);
   });
 
@@ -431,33 +458,72 @@ describe("ɵkeepToolResultsWithCalls", () => {
       }
     });
 
-    it("lands every moved result behind an earlier call for its id, with only tool or activity messages between", () => {
+    /**
+     * Run on slot-tagged copies, so every input position is a distinct
+     * object, and report which input positions moved. A tool result moved
+     * exactly when the boundary it sits behind changed; this reads only the
+     * output, never re-derives which call a result should answer.
+     */
+    const runTagged = (history: Message[]) => {
+      const tagged = history.map((m, slot) =>
+        m === null ? m : ({ ...m, slot } as unknown as Message),
+      );
+      const out = ɵkeepToolResultsWithCalls(tagged);
+      const inAnchors = anchorsOf(tagged);
+      const outAnchors = anchorsOf(out);
+      const moved = new Set<number>();
+      out.forEach((m, index) => {
+        if (roleOf(m) !== "tool") return;
+        const before = inAnchors[slotOf(m)]!;
+        const after = outAnchors[index]!;
+        const issuer = after === -1 ? undefined : out[after];
+        if (issuer !== (before === -1 ? undefined : tagged[before])) {
+          moved.add(slotOf(m));
+        }
+      });
+      return { tagged, out, outAnchors, moved };
+    };
+
+    it("pairs by position, giving the same order whether or not entries alias each other", () => {
       for (const history of histories) {
-        // Distinct wrappers tag each input slot, so a moved slot can be told
-        // apart from an alias of it that stayed. Position-based pairing must
-        // give the same order with or without the aliasing.
-        const tagged = history.map((m, slot) =>
-          m === null ? m : ({ ...m, slot } as unknown as Message),
-        );
-        const out = ɵkeepToolResultsWithCalls(tagged);
+        const { out } = runTagged(history);
         expect(out.map((m) => (m === null ? m : history[slotOf(m)]))).toEqual(
           ɵkeepToolResultsWithCalls(history),
         );
+      }
+    });
 
-        const inAnchors = anchorsOf(tagged);
-        const outAnchors = anchorsOf(out);
+    it("leaves exactly the input behind once the moved results are taken out", () => {
+      for (const history of histories) {
+        const { tagged, out, moved } = runTagged(history);
+        const outWithoutMoved = out.filter(
+          (m) => m === null || !moved.has(slotOf(m)),
+        );
+        const inWithoutMoved = tagged.filter((_, slot) => !moved.has(slot));
+        expect(outWithoutMoved).toHaveLength(inWithoutMoved.length);
+        inWithoutMoved.forEach((m, index) =>
+          expect(outWithoutMoved[index]).toBe(m),
+        );
+      }
+    });
+
+    it("lands every moved result after an earlier assistant call for its id, with only tool or activity messages between", () => {
+      for (const history of histories) {
+        const { out, outAnchors, moved } = runTagged(history);
         out.forEach((m, index) => {
-          if (roleOf(m) !== "tool") return;
-          const slot = slotOf(m);
-          const anchorBefore = inAnchors[slot]!;
-          const anchorAfter = outAnchors[index]!;
-          const issuerAfter = anchorAfter === -1 ? undefined : out[anchorAfter];
-          if (issuerAfter === tagged[anchorBefore]) return; // stayed put
-          // Moved: now behind an assistant that issued its id earlier.
-          expect(roleOf(issuerAfter!)).toBe("assistant");
-          expect(slotOf(issuerAfter!)).toBeLessThan(slot);
+          if (m === null || !moved.has(slotOf(m))) return;
+          const anchor = outAnchors[index]!;
+          expect(anchor).toBeGreaterThanOrEqual(0);
+          const issuer = out[anchor]!;
+          // anchorsOf picks the last non-tool, non-activity message, so
+          // everything between the issuer and the result is tool or activity.
+          for (let between = anchor + 1; between < index; between++) {
+            expect(["tool", "activity"]).toContain(roleOf(out[between]!));
+          }
+          expect(roleOf(issuer)).toBe("assistant");
+          expect(slotOf(issuer)).toBeLessThan(slotOf(m));
           const callIds = (
-            (issuerAfter as { toolCalls?: { id: string }[] }).toolCalls ?? []
+            (issuer as { toolCalls?: { id: string }[] }).toolCalls ?? []
           ).map((call) => call.id);
           expect(callIds).toContain((m as { toolCallId?: string }).toolCallId);
         });
@@ -647,6 +713,32 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
     },
   );
 
+  it("falls back to the full thread when the filter returns an array as an entry", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const agent = new ProxiedCopilotRuntimeAgent({
+      runtimeUrl: "https://runtime.example",
+      agentId: "a",
+      transport: "rest",
+      // The shape a `messages.map((m) => [m])` mistake produces: every entry
+      // is an object to `typeof`, but none is a message.
+      messageFilter: (messages) => messages.map((m) => [m]) as never,
+    });
+    agent.setMessages(history());
+
+    await expect(agent.runAgent()).resolves.toMatchObject({
+      newMessages: expect.any(Array),
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(sentMessages(init).map((m) => m.id)).toEqual(["u1", "a1", "u2"]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        "messageFilter returned an entry that is not a message",
+      ),
+    );
+  });
+
   it("falls back to the full thread when the filter smuggles in a non-message entry", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const agent = new ProxiedCopilotRuntimeAgent({
@@ -831,11 +923,11 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
   it("blames the tool-call repair, not a filter that worked, and still sends the filter's output when the repair throws", async () => {
     // Forced through the module export: the repair failing is what is under
     // test, independent of which malformed input happens to trip it.
-    vi.spyOn(messageFilterModule, "ɵrepairToolCallPairs").mockImplementation(
-      () => {
+    const repair = vi
+      .spyOn(messageFilterModule, "ɵrepairToolCallPairs")
+      .mockImplementation(() => {
         throw new Error("repair bug");
-      },
-    );
+      });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const agent = new ProxiedCopilotRuntimeAgent({
       runtimeUrl: "https://runtime.example",
@@ -849,6 +941,7 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
       newMessages: expect.any(Array),
     });
 
+    expect(repair).toHaveBeenCalledTimes(1);
     // The filter worked, so its trimming (or redaction) still applies; only
     // the repair on top of it is skipped.
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -868,12 +961,11 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
     // A failed filter falls back to the full thread, which takes the
     // unfiltered path, so that is the step forced to throw here.
     const repair = vi.spyOn(messageFilterModule, "ɵrepairToolCallPairs");
-    vi.spyOn(
-      messageFilterModule,
-      "ɵkeepToolResultsWithCalls",
-    ).mockImplementation(() => {
-      throw new Error("repair bug");
-    });
+    const keep = vi
+      .spyOn(messageFilterModule, "ɵkeepToolResultsWithCalls")
+      .mockImplementation(() => {
+        throw new Error("repair bug");
+      });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const agent = new ProxiedCopilotRuntimeAgent({
       runtimeUrl: "https://runtime.example",
@@ -895,6 +987,7 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
       expect.stringContaining("messageFilter failed"),
       expect.stringContaining("tool-call repair failed"),
     ]);
+    expect(keep).toHaveBeenCalledTimes(1);
     expect(repair).not.toHaveBeenCalled();
   });
 
@@ -1308,14 +1401,31 @@ describe("ProxiedCopilotRuntimeAgent tool-call pairing without a filter", () => 
     expect(warn).not.toHaveBeenCalled();
   });
 
+  it("calls the pairing step through the module export, so a spy on it intercepts the send", async () => {
+    // The throw tests below force a failure by mocking this export. That only
+    // proves anything if agent.ts reaches the step through the same binding
+    // the spy replaces; this pins that it does.
+    const sentinel = [createMessage({ id: "from-spy" })];
+    const keep = vi
+      .spyOn(messageFilterModule, "ɵkeepToolResultsWithCalls")
+      .mockReturnValue(sentinel);
+    const { messages } = detached();
+    const agent = agentWith(messages);
+
+    await agent.runAgent();
+
+    expect(keep).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(sentMessages(init).map((m) => m.id)).toEqual(["from-spy"]);
+  });
+
   it("warns once, naming the repair, and sends the input unchanged when the repair throws", async () => {
     // Forced through the module export: no known input makes it throw.
-    vi.spyOn(
-      messageFilterModule,
-      "ɵkeepToolResultsWithCalls",
-    ).mockImplementation(() => {
-      throw new Error("repair bug");
-    });
+    const keep = vi
+      .spyOn(messageFilterModule, "ɵkeepToolResultsWithCalls")
+      .mockImplementation(() => {
+        throw new Error("repair bug");
+      });
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const { call, result, messages } = detached();
     const agent = agentWith(messages);
@@ -1325,6 +1435,7 @@ describe("ProxiedCopilotRuntimeAgent tool-call pairing without a filter", () => 
     });
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(keep).toHaveBeenCalledTimes(1);
     expect(sentMessages(init).map((m) => m.id)).toEqual([
       "u1",
       call.id,

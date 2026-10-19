@@ -365,10 +365,10 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
    * the filter's output cannot be used, meaning "send the full thread".
    *
    * A filter that throws, returns a non-array, or returns an array with an
-   * entry that is not a message object (a hole included) falls back to the
-   * untrimmed thread rather than failing the run. Trimming is an
-   * optimization, and taking the user's message down with it would be the
-   * worse outcome; the warning is what surfaces the bug.
+   * entry that is not a message object (a hole or a nested array included)
+   * falls back to the untrimmed thread rather than failing the run. Trimming
+   * is an optimization, and taking the user's message down with it would be
+   * the worse outcome; the warning is what surfaces the bug.
    */
   #applyMessageFilter(full: Message[]): Message[] | undefined {
     const filter = this._messageFilter;
@@ -393,7 +393,7 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
     // An index loop, not `every`: `every` skips the holes of a sparse array.
     for (let index = 0; index < kept.length; index++) {
       const entry: unknown = kept[index];
-      if (typeof entry !== "object" || entry === null) {
+      if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
         console.warn(
           "ProxiedCopilotRuntimeAgent: messageFilter returned an entry that is not a message; sending the full message history instead.",
         );
