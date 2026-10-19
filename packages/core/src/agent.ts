@@ -295,21 +295,24 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
    * Two paths, deliberately separate:
    *
    * - **No filter** (or a filter whose output could not be used, which falls
-   *   back to the full thread): `ɵkeepToolResultsWithCalls` moves only
-   *   detached tool results back behind their issuing call and leaves
-   *   everything else exactly as stored. The client store can detach a result on its own: when a
-   *   backend's `MESSAGES_SNAPSHOT` carries a tool message under a different
-   *   id than the streamed `TOOL_CALL_RESULT` did, the `@ag-ui/client` merge
-   *   drops the copy placed after its call and appends the snapshot's copy at
-   *   the end. A backend that rebuilds its state from that payload (a
-   *   LangGraph agent whose checkpoint is gone) discards every result it
-   *   cannot pair, and the model loses them for good.
-   * - **Filter**: `ɵrepairToolCallPairs(kept, full)` restores the pairs the
-   *   filter broke, unchanged by this path split. It does not run the
-   *   detached-result move. It emits the stored thread's message, not the
-   *   filter's copy, for every message it restores and for every tool result
-   *   whose call is in the stored thread, kept or not — so a filter's edits
-   *   to a tool result do not survive it.
+   *   back to the full thread): `ɵkeepToolResultsWithCalls` moves only tool
+   *   results that have drifted away from their issuing call to sit behind
+   *   it, and leaves everything else exactly as stored. The client store can
+   *   detach a result on its own: when a backend's `MESSAGES_SNAPSHOT`
+   *   carries a tool message under a different id than the streamed
+   *   `TOOL_CALL_RESULT` did, the `@ag-ui/client` merge drops the copy placed
+   *   after its call and appends the snapshot's copy at the end. A backend
+   *   that rebuilds its state from that payload (a LangGraph agent whose
+   *   checkpoint is gone) discards every result it cannot pair, and the model
+   *   loses them for good.
+   * - **Filter**: `ɵrepairToolCallPairs(kept, full)` is the existing filter
+   *   repair: it puts back the call or the results a filter trimmed from a
+   *   kept pair, and does not run the drifted-result move. Known
+   *   limitations: it matches by call id and message id, so a reused call id
+   *   pairs with the last stored call and result for it, and messages that
+   *   share an id are sent once; and it sends the stored copy of every
+   *   message it restores and of every tool result whose call is stored, so a
+   *   filter's edits to those do not survive it.
    *
    * **Called from the HTTP paths only, and that placement is the Intelligence
    * exemption.** An earlier revision applied the filter in
@@ -347,8 +350,8 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
     // payload goes out as it would have without it — the input unchanged
     // when nothing was filtered, the filter's own output (unrepaired) when a
     // filter ran. Only that throw path sends the filter's output verbatim:
-    // when the repair succeeds, it re-emits stored originals (see above), so
-    // a filter's edits to those messages are not kept.
+    // a successful filter repair sends the stored copy of every message it
+    // restores and of every tool result whose call is stored (see above).
     try {
       const messages =
         kept === undefined

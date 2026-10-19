@@ -156,7 +156,7 @@ describe("ɵrepairToolCallPairs", () => {
     expect(repaired.map((m) => m.id)).toEqual([call.id, result.id]);
   });
 
-  it("returns the list untouched when the filter kept everything", () => {
+  it("returns the same messages in the same order when the filter kept everything", () => {
     const full = [
       createMessage({ id: "u1" }),
       createAssistantMessage({ id: "a1" }),
@@ -186,6 +186,8 @@ const reasoningMsg = (id: string) =>
   ({ id, role: "reasoning", content: id }) as Message;
 const activityMsg = (id: string) =>
   ({ id, role: "activity", activityType: "x", content: {} }) as never;
+const withRun = (message: Message, subagentRunId: string) =>
+  ({ ...message, subagentRunId }) as Message;
 
 // mulberry32: a tiny seeded PRNG, so every run checks the same histories
 // and a failure reproduces from its seed.
@@ -200,6 +202,11 @@ const prng = (seed: number) => () => {
 const roleOf = (message: Message) =>
   (message as { role?: string } | null)?.role;
 const slotOf = (m: Message) => (m as unknown as { slot: number }).slot;
+// Null and array entries are transparent: like activity, never an anchor.
+const isEntry = (message: Message) =>
+  message !== null && !Array.isArray(message);
+const runOf = (message: Message) =>
+  (message as { subagentRunId?: string }).subagentRunId ?? "";
 
 describe("ɵkeepToolResultsWithCalls", () => {
   it("moves a detached result back behind its call (the snapshot-merge shape)", () => {
@@ -239,7 +246,7 @@ describe("ɵkeepToolResultsWithCalls", () => {
     expect(ɵkeepToolResultsWithCalls(thread)).toBe(thread);
   });
 
-  it("pairs several detached results for one reused id oldest call first", () => {
+  it("pairs several detached results for one reused id from the newest back, keeping stored order per call", () => {
     const a1 = callsMsg("A1", "c");
     const a2 = callsMsg("A2", "c");
     const x = textMsg("X");
@@ -329,15 +336,137 @@ describe("ɵkeepToolResultsWithCalls", () => {
     );
   });
 
-  it("leaves a result stored before its call where it is", () => {
-    const thread = [
-      userMsg("u"),
-      toolMsg("t", "c"),
-      callsMsg("a", "c"),
-      textMsg("x"),
-    ];
+  it("moves a result stored before its call forward, directly behind the call", () => {
+    const u = userMsg("u");
+    const t = toolMsg("t", "c");
+    const a1 = callsMsg("a1", "c");
+    const x = textMsg("x");
+
+    expect(ɵkeepToolResultsWithCalls([u, t, a1, x])).toEqual([u, a1, t, x]);
+  });
+
+  it("moves a result forward past reasoning stored before its call", () => {
+    const u = userMsg("u");
+    const t = toolMsg("t", "c");
+    const r = reasoningMsg("r");
+    const a = callsMsg("a", "c");
+
+    expect(ɵkeepToolResultsWithCalls([u, t, r, a])).toEqual([u, r, a, t]);
+  });
+
+  it("never moves a result forward onto a call that a later in-place result answers", () => {
+    const thread = [toolMsg("t1", "c"), callsMsg("a", "c"), toolMsg("t2", "c")];
 
     expect(ɵkeepToolResultsWithCalls(thread)).toBe(thread);
+  });
+
+  it("moves a result forward to the first later call still unanswered", () => {
+    const t0 = toolMsg("t0", "c");
+    const a1 = callsMsg("a1", "c");
+    const t1 = toolMsg("t1", "c");
+    const a2 = callsMsg("a2", "c");
+    const a3 = callsMsg("a3", "c");
+
+    expect(ɵkeepToolResultsWithCalls([t0, a1, t1, a2, a3])).toEqual([
+      a1,
+      t1,
+      a2,
+      t0,
+      a3,
+    ]);
+  });
+
+  it("moves an extra result for an answered call forward to the next open call with its id", () => {
+    const a = callsMsg("a", "c");
+    const t1 = toolMsg("t1", "c");
+    const t2 = toolMsg("t2", "c");
+    const x = textMsg("x");
+    const a2 = callsMsg("a2", "c");
+
+    expect(ɵkeepToolResultsWithCalls([a, t1, t2, x, a2])).toEqual([
+      a,
+      t1,
+      x,
+      a2,
+      t2,
+    ]);
+  });
+
+  it("moves results left without an earlier call forward in stored order", () => {
+    // t3 takes the one earlier call; t1 and t2 are left over and go forward,
+    // the earlier result to the earlier call.
+    const a = callsMsg("a", "c");
+    const x = textMsg("x");
+    const t1 = toolMsg("t1", "c");
+    const t2 = toolMsg("t2", "c");
+    const t3 = toolMsg("t3", "c");
+    const a2 = callsMsg("a2", "c");
+    const a3 = callsMsg("a3", "c");
+
+    expect(ɵkeepToolResultsWithCalls([a, x, t1, t2, t3, a2, a3])).toEqual([
+      a,
+      t3,
+      x,
+      a2,
+      t1,
+      a3,
+      t2,
+    ]);
+  });
+
+  it("pairs a result only with a call from the same subagent run", () => {
+    const u = userMsg("u");
+    const a = callsMsg("a", "c");
+    const s = withRun(callsMsg("s", "c"), "r1");
+    const x = textMsg("x");
+    const ts = withRun(toolMsg("ts", "c"), "r1");
+    const t = toolMsg("t", "c");
+
+    expect(ɵkeepToolResultsWithCalls([u, a, s, x, ts, t])).toEqual([
+      u,
+      a,
+      t,
+      s,
+      ts,
+      x,
+    ]);
+  });
+
+  it("treats an array entry as transparent, like null: never the anchor", () => {
+    const a = callsMsg("a", "c");
+    const nested = [] as unknown as Message;
+    const x = textMsg("x");
+    const t = toolMsg("t", "c");
+
+    const between = [a, nested, t];
+    expect(ɵkeepToolResultsWithCalls(between)).toBe(between);
+    expect(ɵkeepToolResultsWithCalls([a, x, nested, t])).toEqual([
+      a,
+      t,
+      x,
+      nested,
+    ]);
+  });
+
+  it("keeps the stored order of the results it moves behind one call", () => {
+    const a1 = callsMsg("a1", "c1", "c2");
+    const x = textMsg("x");
+    const t1 = toolMsg("t1", "c1");
+    const t2 = toolMsg("t2", "c2");
+    expect(ɵkeepToolResultsWithCalls([a1, x, t1, t2])).toEqual([a1, t1, t2, x]);
+    expect(ɵkeepToolResultsWithCalls([a1, x, t2, t1])).toEqual([a1, t2, t1, x]);
+
+    // Ids are matched one at a time, newest result first, so the collected
+    // order here is t3, t1, t2; only sorting gives back the stored order.
+    const a = callsMsg("a", "c1", "c1", "c2");
+    const t3 = toolMsg("t3", "c1");
+    expect(ɵkeepToolResultsWithCalls([a, x, t1, t2, t3])).toEqual([
+      a,
+      t1,
+      t2,
+      t3,
+      x,
+    ]);
   });
 
   it("keeps both detached results for one call, moving only the later one behind it", () => {
@@ -410,10 +539,15 @@ describe("ɵkeepToolResultsWithCalls", () => {
     const RUNS = 4000;
     const MAX_LENGTH = 14;
     const ID_POOL = ["c0", "c1", "c2"];
+    const RUN_POOL = [undefined, undefined, "r1", "r2"];
 
     const randomHistory = (random: () => number): Message[] => {
       const pick = <T>(items: T[]) =>
         items[Math.floor(random() * items.length)]!;
+      const inRun = (message: Message) => {
+        const run = pick(RUN_POOL);
+        return run === undefined ? message : withRun(message, run);
+      };
       const length = Math.floor(random() * (MAX_LENGTH + 1));
       const history: Message[] = [];
       for (let index = 0; index < length; index++) {
@@ -425,30 +559,37 @@ describe("ɵkeepToolResultsWithCalls", () => {
         const id = `m${index}`;
         const kind = random();
         if (kind < 0.12) history.push(userMsg(id));
-        else if (kind < 0.42) {
+        else if (kind < 0.4) {
           const count = Math.floor(random() * 4);
           const ids = Array.from({ length: count }, () => pick(ID_POOL));
-          history.push(callsMsg(id, ...ids));
-        } else if (kind < 0.52) history.push(textMsg(id));
-        else if (kind < 0.6) history.push(reasoningMsg(id));
-        else if (kind < 0.8) history.push(toolMsg(id, pick(ID_POOL)));
-        else if (kind < 0.88) {
+          history.push(inRun(callsMsg(id, ...ids)));
+        } else if (kind < 0.48) history.push(textMsg(id));
+        else if (kind < 0.55) history.push(reasoningMsg(id));
+        else if (kind < 0.72) history.push(inRun(toolMsg(id, pick(ID_POOL))));
+        else if (kind < 0.8) {
           // A burst of results for one reused id, the shape a snapshot that
           // re-ids every tool message leaves at the end of the thread.
           const callId = pick(ID_POOL);
           const count = 2 + Math.floor(random() * 2);
           for (let burst = 0; burst < count; burst++) {
-            history.push(toolMsg(`${id}.${burst}`, callId));
+            history.push(inRun(toolMsg(`${id}.${burst}`, callId)));
           }
-        } else if (kind < 0.94) history.push(activityMsg(id));
-        else history.push(null as unknown as Message);
+        } else if (kind < 0.86) {
+          // A result stored before the call it answers.
+          const callId = pick(ID_POOL);
+          const result = inRun(toolMsg(`${id}.t`, callId));
+          const run = (result as { subagentRunId?: string }).subagentRunId;
+          const call = callsMsg(`${id}.a`, callId);
+          history.push(result, run === undefined ? call : withRun(call, run));
+        } else if (kind < 0.92) history.push(activityMsg(id));
+        else if (kind < 0.96) history.push(null as unknown as Message);
+        else history.push([] as unknown as Message);
       }
       return history;
     };
 
-    // Null entries are transparent: like activity, never an anchor.
     const isBoundary = (message: Message) =>
-      message !== null &&
+      isEntry(message) &&
       roleOf(message) !== "tool" &&
       roleOf(message) !== "activity";
     const counts = (messages: Message[]) => {
@@ -512,7 +653,7 @@ describe("ɵkeepToolResultsWithCalls", () => {
      */
     const runTagged = (history: Message[]) => {
       const tagged = history.map((m, slot) =>
-        m === null ? m : ({ ...m, slot } as unknown as Message),
+        isEntry(m) ? ({ ...m, slot } as unknown as Message) : m,
       );
       const out = ɵkeepToolResultsWithCalls(tagged);
       const inAnchors = anchorsOf(tagged);
@@ -527,13 +668,56 @@ describe("ɵkeepToolResultsWithCalls", () => {
           moved.add(slotOf(m));
         }
       });
-      return { tagged, out, outAnchors, moved };
+      return { tagged, out, inAnchors, outAnchors, moved };
+    };
+
+    /** How many calls `issuer` makes under the result's key. */
+    const callsFor = (issuer: Message, result: Message) =>
+      roleOf(issuer) === "assistant" && runOf(issuer) === runOf(result)
+        ? toolCallIdsOf(issuer).filter(
+            (id) => id === (result as { toolCallId?: string }).toolCallId,
+          ).length
+        : 0;
+    const keyOf = (issuerSlot: number, result: Message) =>
+      JSON.stringify([
+        issuerSlot,
+        runOf(result),
+        (result as { toolCallId?: string }).toolCallId,
+      ]);
+
+    /**
+     * Per issuer and key, how many results moved in behind it, and how many
+     * of its slots were answered in place (the first results for the key
+     * stored behind it, up to its call count).
+     */
+    const slotUse = (history: Message[]) => {
+      const { tagged, out, inAnchors, outAnchors, moved } = runTagged(history);
+      const movedIn = new Map<string, number>();
+      const inPlace = new Map<string, number>();
+      const calls = new Map<string, number>();
+      out.forEach((m, index) => {
+        if (!isEntry(m) || !moved.has(slotOf(m))) return;
+        const issuer = out[outAnchors[index]!]!;
+        const key = keyOf(slotOf(issuer), m);
+        movedIn.set(key, (movedIn.get(key) ?? 0) + 1);
+        calls.set(key, callsFor(issuer, m));
+      });
+      const behind = new Map<string, number>();
+      tagged.forEach((m, slot) => {
+        if (roleOf(m) !== "tool" || inAnchors[slot] === -1) return;
+        const issuer = tagged[inAnchors[slot]!]!;
+        const key = keyOf(inAnchors[slot]!, m);
+        behind.set(key, (behind.get(key) ?? 0) + 1);
+        const limit = callsFor(issuer, m);
+        inPlace.set(key, Math.min(behind.get(key)!, limit));
+      });
+      return { movedIn, inPlace, calls };
     };
 
     it("pairs by position, giving the same order whether or not entries alias each other", () => {
       for (const history of histories) {
         const { out } = runTagged(history);
-        expect(out.map((m) => (m === null ? m : history[slotOf(m)]))).toEqual(
+        expect(out.map((m) => (isEntry(m) ? history[slotOf(m)] : m))).toEqual(
           ɵkeepToolResultsWithCalls(history),
         );
       }
@@ -543,7 +727,7 @@ describe("ɵkeepToolResultsWithCalls", () => {
       for (const history of histories) {
         const { tagged, out, moved } = runTagged(history);
         const outWithoutMoved = out.filter(
-          (m) => m === null || !moved.has(slotOf(m)),
+          (m) => !isEntry(m) || !moved.has(slotOf(m)),
         );
         const inWithoutMoved = tagged.filter((_, slot) => !moved.has(slot));
         expect(outWithoutMoved).toHaveLength(inWithoutMoved.length);
@@ -553,26 +737,56 @@ describe("ɵkeepToolResultsWithCalls", () => {
       }
     });
 
-    it("lands every moved result after an earlier assistant call for its id, with only tool, activity, or null entries between", () => {
+    it("lands every moved result directly behind an assistant call for its id and subagent run, with only tool or transparent entries between", () => {
       for (const history of histories) {
         const { out, outAnchors, moved } = runTagged(history);
         out.forEach((m, index) => {
-          if (m === null || !moved.has(slotOf(m))) return;
+          if (!isEntry(m) || !moved.has(slotOf(m))) return;
           const anchor = outAnchors[index]!;
           expect(anchor).toBeGreaterThanOrEqual(0);
-          const issuer = out[anchor]!;
           // anchorsOf picks the last boundary, so everything between the
-          // issuer and the result is tool, activity, or a null entry.
+          // issuer and the result is tool, activity, or a transparent entry.
           for (let between = anchor + 1; between < index; between++) {
-            if (out[between] === null) continue;
+            if (!isEntry(out[between]!)) continue;
             expect(["tool", "activity"]).toContain(roleOf(out[between]!));
           }
-          expect(roleOf(issuer)).toBe("assistant");
-          expect(slotOf(issuer)).toBeLessThan(slotOf(m));
-          const callIds = (
-            (issuer as { toolCalls?: { id: string }[] }).toolCalls ?? []
-          ).map((call) => call.id);
-          expect(callIds).toContain((m as { toolCallId?: string }).toolCallId);
+          expect(callsFor(out[anchor]!, m)).toBeGreaterThan(0);
+        });
+      }
+    });
+
+    it("never answers one slot twice by moves", () => {
+      for (const history of histories) {
+        const { movedIn, calls } = slotUse(history);
+        for (const [key, count] of movedIn) {
+          expect(count).toBeLessThanOrEqual(calls.get(key)!);
+        }
+      }
+    });
+
+    it("moves every result onto a slot that was open, never one answered in place", () => {
+      for (const history of histories) {
+        const { movedIn, inPlace, calls } = slotUse(history);
+        for (const [key, count] of movedIn) {
+          expect(count + (inPlace.get(key) ?? 0)).toBeLessThanOrEqual(
+            calls.get(key)!,
+          );
+        }
+      }
+    });
+
+    it("keeps the stored order of the results moved behind one issuer", () => {
+      for (const history of histories) {
+        const { out, outAnchors, moved } = runTagged(history);
+        const lastSlot = new Map<number, number>();
+        out.forEach((m, index) => {
+          if (!isEntry(m) || !moved.has(slotOf(m))) return;
+          const issuer = outAnchors[index]!;
+          const previous = lastSlot.get(issuer);
+          if (previous !== undefined) {
+            expect(slotOf(m)).toBeGreaterThan(previous);
+          }
+          lastSlot.set(issuer, slotOf(m));
         });
       }
     });
@@ -1026,7 +1240,10 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
       runtimeUrl: "https://runtime.example",
       agentId: "a",
       transport: "rest",
-      messageFilter: (messages) => messages.slice(-1),
+      messageFilter: (messages) =>
+        messages
+          .slice(-1)
+          .map((m) => ({ ...m, content: "redacted" }) as Message),
     });
     agent.setMessages(history());
 
@@ -1035,10 +1252,12 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
     });
 
     expect(repair).toHaveBeenCalledTimes(1);
-    // The filter worked, so its trimming (or redaction) still applies; only
-    // the repair on top of it is skipped.
+    // The filter worked, so its output goes out verbatim, edits included;
+    // only the repair on top of it is skipped.
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(sentMessages(init).map((m) => m.id)).toEqual(["u2"]);
+    const sent = sentMessages(init);
+    expect(sent.map((m) => m.id)).toEqual(["u2"]);
+    expect(sent[0]!.content).toBe("redacted");
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining("tool-call repair failed"),
@@ -1185,10 +1404,10 @@ describe("ProxiedCopilotRuntimeAgent messageFilter", () => {
 
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     const sent = sentMessages(init);
-    // Pinned as sent today. Known limitation of main's filter repair, not
-    // fixed here: ɵrepairToolCallPairs de-duplicates by message id, so the
-    // text message that shares the call's id ("same id") is dropped rather
-    // than sent. Nothing is sent twice, which is what this test guards.
+    // ɵrepairToolCallPairs de-duplicates by message id, so the text message
+    // that shares the call's id ("same id") is not sent: a known limitation
+    // of the filter repair. Nothing is sent twice, which is what this test
+    // guards.
     expect(sent.map((m) => [m.id, m.role])).toEqual([
       ["u1", "user"],
       ["x", "assistant"],
@@ -1467,10 +1686,9 @@ describe("ProxiedCopilotRuntimeAgent tool-call pairing without a filter", () => 
   it("sends a malformed stored thread as-is instead of failing the run", async () => {
     // A persisted or hand-built message can carry a null entry in its
     // toolCalls. The unfiltered pairing step skips entries it cannot read
-    // rather than throwing; it must never cost the user a send the agent made
-    // before it existed. The single-route transport is used because it
-    // forwards the payload without schema validation, so before the pairing
-    // step existed this thread did go out.
+    // rather than throwing, so a thread the transport would accept is never
+    // lost to it. The single-route transport is used because it forwards the
+    // payload without schema validation, so this thread reaches the wire.
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const malformed = createAssistantMessage({
       id: "a1",

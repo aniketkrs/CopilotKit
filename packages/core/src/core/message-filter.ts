@@ -142,49 +142,60 @@ export function ɵrepairToolCallPairs(
  * leaving `assistant(tool_call), assistant(text), tool(result)`. A backend that
  * rebuilds its state from that payload discards every result it cannot pair.
  *
- * The pairing rule mirrors the one proposed for the `@ag-ui/client` snapshot
- * reducer in ag-ui-protocol/ag-ui#3114 (not in a released `@ag-ui/client` at
- * the time of writing):
+ * The pairing rule mirrors the `@ag-ui/client` snapshot pass
+ * (ag-ui-protocol/ag-ui#3114):
  *
  * - Everything is by list position. The same object or id appearing twice is
- *   two independent slots. Nothing is dropped, deduplicated, or added, and
- *   only tool-role messages ever change position. Duplicated entries
- *   (including an assistant call the merge duplicated) are never dropped or
- *   deduplicated either, so a duplicated call can be left unanswered.
- * - The anchor is the last message so far that is not `tool`, not
- *   `activity`, and not a non-object entry. Each tool call an assistant
- *   issues opens a slot for its call id.
- * - Pass 1, left to right: a result whose id has an open slot issued at the
- *   anchor is in place; it takes that slot and stays put. A result whose id
- *   has an open slot issued earlier is detached. Detached results take no
- *   slot in this pass: they could only ever take a slot issued before the
- *   current anchor, which no later in-place result can want.
- * - Pass 2, per call id, takes the detached results from the newest back:
- *   each takes the newest still-open slot issued before it. So when several
+ *   two independent slots, including an assistant call the merge duplicated,
+ *   so a duplicated call can be left unanswered. Nothing is dropped,
+ *   deduplicated, or added, and only tool-role messages ever change position.
+ * - Transparent entries are `activity` messages and anything that is not a
+ *   plain object (`null`, arrays, primitives). They are never the anchor,
+ *   never separate a call from its result, and stay in place.
+ * - The anchor is the last non-transparent message so far that is not `tool`.
+ *   Each tool call an assistant issues opens a slot keyed by the message's
+ *   `subagentRunId` (absent counts as none) and the call id. A result pairs
+ *   only with slots under its own `subagentRunId` and `toolCallId`.
+ * - Pass 1, left to right: a result with an open slot issued at the anchor is
+ *   in place; it takes that slot and stays put. A result with an open slot
+ *   issued earlier is detached. Detached results take no slot in this pass:
+ *   they could only ever take a slot issued before the current anchor, which
+ *   no later in-place result can want.
+ * - Pass 2, backward, per key: the detached results, from the newest back,
+ *   each take the newest still-open slot issued before them. So when several
  *   results for a reused id (providers reuse `call_0` every turn) are all
  *   detached, they keep their stored order across the calls, and a later
  *   turn's lone result goes to the later call rather than to an earlier one
- *   that was abandoned. A detached result left without a slot stays put.
- * - A moved result goes behind its issuer, after the tool, activity, and
- *   non-object entries already following it, in stored order. Any other
- *   message between a call and its result separates them, so the result
- *   moves before it: reasoning stored between the two ends up after the
- *   result.
+ *   that was abandoned.
+ * - Pass 3, forward, per key: every result still unpaired now has no open
+ *   slot issued before it. Left to right, each takes the first still-open
+ *   slot issued after it, if any. In-place results took their slots in pass
+ *   1, so this never steals one. A result left without a slot stays put.
+ * - A moved result goes behind its issuer, after the tool and transparent
+ *   entries already following it; results moved behind one issuer keep their
+ *   stored order. Any other message between a call and its result separates
+ *   them, so a backward-moved result moves before it (reasoning stored
+ *   between the two ends up after the result) and a forward-moved result
+ *   moves past it.
  * - The rule cannot tell a duplicate result from a detached one. A second
- *   result for an already-answered call takes an older still-open slot for
- *   that id if there is one, even across user turns.
- * - Malformed entries are ignored rather than thrown on. Non-object entries
- *   (`null` included) are transparent: never the anchor, never separating a
- *   call from its result, passed through in place. Non-array `toolCalls` and
- *   call entries without a string `id` open no slot.
+ *   result for an already-answered call takes another still-open slot for
+ *   its key if there is one — an older one first, else a later one — even
+ *   across user turns.
+ * - Malformed entries are ignored rather than thrown on. Non-array
+ *   `toolCalls`, call entries without a string `id`, and results without a
+ *   string `toolCallId` open or take no slot; a non-string `subagentRunId`
+ *   counts as none.
  *
  * Returns `messages` itself when nothing moved.
  */
 export function ɵkeepToolResultsWithCalls(messages: Message[]): Message[] {
-  // Per call id, the slots its calls opened, in stored order.
-  const slots = new Map<string, { issuer: number; open: boolean }[]>();
-  // Per call id, the detached results, in stored order.
+  type Slot = { issuer: number; open: boolean };
+  // Per key, the slots its calls opened, in stored order.
+  const slots = new Map<string, Slot[]>();
+  // Per key, the detached results, in stored order.
   const detached = new Map<string, number[]>();
+  // Per key, the results with no open slot issued before them, in stored order.
+  const unpaired = new Map<string, number[]>();
   let anchor = -1;
 
   for (let index = 0; index < messages.length; index++) {
@@ -203,46 +214,54 @@ export function ɵkeepToolResultsWithCalls(messages: Message[]): Message[] {
         if (typeof call !== "object" || call === null) continue;
         const callId = (call as { id?: unknown }).id;
         if (typeof callId !== "string") continue;
-        const forId = slots.get(callId) ?? [];
-        forId.push({ issuer: index, open: true });
-        slots.set(callId, forId);
+        push(slots, slotKey(message, callId), { issuer: index, open: true });
       }
       continue;
     }
 
     const callId = (message as { toolCallId?: unknown }).toolCallId;
     if (typeof callId !== "string") continue;
-    const forId = slots.get(callId);
-    if (!forId) continue;
+    const key = slotKey(message, callId);
+    const forKey = slots.get(key) ?? [];
 
-    const atAnchor = forId.find((slot) => slot.open && slot.issuer === anchor);
+    const atAnchor = forKey.find((slot) => slot.open && slot.issuer === anchor);
     if (atAnchor) {
       atAnchor.open = false;
       continue;
     }
-    if (!forId.some((slot) => slot.open)) continue;
-    const results = detached.get(callId) ?? [];
-    results.push(index);
-    detached.set(callId, results);
+    if (forKey.some((slot) => slot.open)) push(detached, key, index);
+    else push(unpaired, key, index);
   }
 
   const movedBehind = new Map<number, number[]>();
   const moved = new Set<number>();
-  for (const [callId, results] of detached) {
-    const forId = slots.get(callId)!;
+  const take = (slot: Slot, index: number) => {
+    slot.open = false;
+    moved.add(index);
+    push(movedBehind, slot.issuer, index);
+  };
+
+  for (const [key, results] of detached) {
+    const forKey = slots.get(key)!;
     for (let r = results.length - 1; r >= 0; r--) {
       const index = results[r]!;
-      let newest: { issuer: number; open: boolean } | undefined;
-      for (let s = forId.length - 1; s >= 0 && !newest; s--) {
-        const slot = forId[s]!;
+      let newest: Slot | undefined;
+      for (let s = forKey.length - 1; s >= 0 && !newest; s--) {
+        const slot = forKey[s]!;
         if (slot.open && slot.issuer < index) newest = slot;
       }
-      if (!newest) continue;
-      newest.open = false;
-      moved.add(index);
-      const behind = movedBehind.get(newest.issuer) ?? [];
-      behind.push(index);
-      movedBehind.set(newest.issuer, behind);
+      if (newest) take(newest, index);
+      else push(unpaired, key, index);
+    }
+  }
+
+  for (const [key, results] of unpaired) {
+    const forKey = slots.get(key);
+    if (!forKey) continue;
+    // Pass 2 appends its leftovers out of stored order.
+    for (const index of [...results].sort((a, b) => a - b)) {
+      const first = forKey.find((slot) => slot.open && slot.issuer > index);
+      if (first) take(first, index);
     }
   }
 
@@ -253,7 +272,8 @@ export function ɵkeepToolResultsWithCalls(messages: Message[]): Message[] {
   const flush = () => {
     const behind = movedBehind.get(openIssuer);
     if (!behind) return;
-    // Pass 2 collected these newest first; emit them in stored order.
+    // Collected key by key, and within a key in pass order; emit them in
+    // stored order.
     for (const index of [...behind].sort((a, b) => a - b)) {
       result.push(messages[index] as Message);
     }
@@ -261,8 +281,7 @@ export function ɵkeepToolResultsWithCalls(messages: Message[]): Message[] {
   for (let index = 0; index < messages.length; index++) {
     if (moved.has(index)) continue;
     const message: unknown = messages[index];
-    const role = roleOf(message);
-    if (!isTransparent(message) && role !== "tool") {
+    if (!isTransparent(message) && roleOf(message) !== "tool") {
       flush();
       openIssuer = index;
     }
@@ -272,11 +291,21 @@ export function ɵkeepToolResultsWithCalls(messages: Message[]): Message[] {
   return result;
 }
 
-/** Activity messages and non-object entries never anchor or separate. */
+function push<K, T>(map: Map<K, T[]>, key: K, value: T): void {
+  const list = map.get(key);
+  if (list) list.push(value);
+  else map.set(key, [value]);
+}
+
+/**
+ * Activity messages and anything that is not a plain object (`null`, arrays,
+ * primitives) never anchor or separate.
+ */
 function isTransparent(message: unknown): boolean {
   return (
     typeof message !== "object" ||
     message === null ||
+    Array.isArray(message) ||
     (message as { role?: unknown }).role === "activity"
   );
 }
@@ -284,4 +313,10 @@ function isTransparent(message: unknown): boolean {
 function roleOf(message: unknown): unknown {
   if (typeof message !== "object" || message === null) return undefined;
   return (message as { role?: unknown }).role;
+}
+
+/** A slot's key: the message's subagent run (none when absent) and call id. */
+function slotKey(message: unknown, callId: string): string {
+  const run = (message as { subagentRunId?: unknown }).subagentRunId;
+  return JSON.stringify([typeof run === "string" ? run : "", callId]);
 }
