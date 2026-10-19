@@ -294,10 +294,10 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
    *
    * Two paths, deliberately separate:
    *
-   * - **No filter** (or a filter that failed and fell back to the full
-   *   thread): `ɵkeepToolResultsWithCalls` moves only detached tool results
-   *   back behind their issuing call and leaves everything else exactly as
-   *   stored. The client store can detach a result on its own: when a
+   * - **No filter** (or a filter whose output could not be used, which falls
+   *   back to the full thread): `ɵkeepToolResultsWithCalls` moves only
+   *   detached tool results back behind their issuing call and leaves
+   *   everything else exactly as stored. The client store can detach a result on its own: when a
    *   backend's `MESSAGES_SNAPSHOT` carries a tool message under a different
    *   id than the streamed `TOOL_CALL_RESULT` did, the `@ag-ui/client` merge
    *   drops the copy placed after its call and appends the snapshot's copy at
@@ -305,7 +305,11 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
    *   LangGraph agent whose checkpoint is gone) discards every result it
    *   cannot pair, and the model loses them for good.
    * - **Filter**: `ɵrepairToolCallPairs(kept, full)` restores the pairs the
-   *   filter broke, as it always has.
+   *   filter broke, unchanged by this path split. It does not run the
+   *   detached-result move. It emits the stored thread's message, not the
+   *   filter's copy, for every message it restores and for every tool result
+   *   whose call is in the stored thread, kept or not — so a filter's edits
+   *   to a tool result do not survive it.
    *
    * **Called from the HTTP paths only, and that placement is the Intelligence
    * exemption.** An earlier revision applied the filter in
@@ -342,7 +346,9 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
     // repair failing, never as the app's filter failing. If it throws, the
     // payload goes out as it would have without it — the input unchanged
     // when nothing was filtered, the filter's own output (unrepaired) when a
-    // filter ran, so its trimming or redaction is not thrown away.
+    // filter ran. Only that throw path sends the filter's output verbatim:
+    // when the repair succeeds, it re-emits stored originals (see above), so
+    // a filter's edits to those messages are not kept.
     try {
       const messages =
         kept === undefined
@@ -374,9 +380,22 @@ export class ProxiedCopilotRuntimeAgent extends HttpAgent {
     const filter = this._messageFilter;
     if (!filter) return undefined;
 
+    // Copied outside the filter's guard, so a thread that cannot be cloned is
+    // reported as that, not as the app's filter failing.
+    let copy: Message[];
+    try {
+      copy = structuredClone_(full);
+    } catch (error) {
+      console.warn(
+        "ProxiedCopilotRuntimeAgent: could not copy the message history for messageFilter; sending the full message history instead.",
+        error,
+      );
+      return undefined;
+    }
+
     let kept: unknown;
     try {
-      kept = filter(structuredClone_(full), { agentId: this.agentId ?? "" });
+      kept = filter(copy, { agentId: this.agentId ?? "" });
     } catch (error) {
       console.warn(
         "ProxiedCopilotRuntimeAgent: messageFilter failed; sending the full message history instead.",
